@@ -85,6 +85,27 @@ class MyDataset:
         return {'text_ids':self.text_ids[i],"token_type_ids":self.token_type_ids[i],"attention_mask":self.attention_mask[i]
                 "target_tag":self.target_tag[i],"tuen_mask":self.turn_mask[i]}
 
+def get_inputs(context,q,ans,tokenizer,max_len):
+    #首先将答案转化为tag
+    tags = []
+    for an in ans:
+        start,end,ent=an[1:]
+        f
+
+class MyDataset:
+    def __init__(self,path,tokenizer,max_len=521):
+        with open(path,encoding='utf-8') as f:
+            data = json.load(f)
+        for d in data:
+            context = d['context']
+            qa_pairs = d['qa_pairs']
+            for t in qa_pairs:
+                t1 = t[0]
+                t2 = t[1]
+                for q,ans in t1.items():
+                    inputs = get_inputs(context,q,ans,tokenizer,max_len)
+    def
+
 
 class BatchDataet:
     """
