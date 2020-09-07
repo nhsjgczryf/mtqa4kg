@@ -5,12 +5,7 @@ import os
 import argparse
 import json
 import nltk
-parser = argparse.ArgumentParser()
-parser.add_argument(" --dataset_tag",choices=['ace2004','ace2005'],type=str)
-parser.add_argument(" --dataset_path",type=str,help="数据集文件夹的路径")
-parser.add_argument(" --query_template_path",type=str,help="query模板")
-parser.add_argument(" --outputpath",type=str)
-args = parser.parse_args()
+
 
 ace2004_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
 ace2004_relations = ['ART', 'EMP-ORG', 'GPE-AFF', 'OTHER-AFF', 'PER-SOC', 'PHYS']
@@ -19,9 +14,24 @@ ace2005_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
 ace2005_relations = ['ART', 'GEN-AFF', 'ORG-AFF', 'PART-WHOLE', 'PER-SOC', 'PHYS']
 
 
-with open(args.query_template_path,encoding='utf-8') as f:
-    question_templates = json.load(f)
-
+def parse_ann(ann,offset=0):
+    """对.ann文件解析"""
+    ann_list = ann.split('\n')
+    ann_list = [an.split('\t') for an in ann_list if an]
+    for i, ann in enumerate(ann_list):
+        ann_list[i][1]=ann_list[i][1].split()
+        empty = []
+        for ai in ann_list[i]:
+            empty.extend(ai) if isinstance(ai,list) else empty.append(ai)
+        ann_list[i] = empty
+    entities = []
+    relations = []
+    for al in ann_list:
+        if al[0][0]=='T':
+            entities.append([al[0],al[1],int(al[2])+offset,int(al[3])+offset,al[4]])
+        else:
+            relations.append([al[0],al[1],al[2][5:],al[3][5:]])
+    return entities,relations
 
 def get_sent_er(txt,entities,relations):
     """
@@ -29,7 +39,7 @@ def get_sent_er(txt,entities,relations):
     Args:
         txt: 待处理的文本
         entities: 对应的实体标注，是四元组(entity_type, start_idx, end_idx,entity)的列表,不包含end_idx的内容
-        relations: 对应的关系标注,(relation_type,entity1,entity2)三元组的列表,entity1/2是对应的entities列表中的索引
+        relations: 对应的关系标注,(relation_type,entity1,entity2)三元组的列表
     Returns:
         句子级别的标注,list of [句子，实体列表，关系列表]
     """
@@ -44,43 +54,20 @@ def get_sent_er(txt,entities,relations):
     e_dict = {}#用来记录某个实体对应在哪个句子
     for i,s,e in enumerate(sent_range):
         es = []#实体集合
-        for j,(entity_type, start_idx, end_idx,entity) in enumerate(entities):
+        for j,(entity_type, start_idx, end_idx,entity_str) in enumerate(entities):
             if start_idx>=s and end_idx<=e:
-                es.append((entity_type,start_idx-s,end_idx-s))
+                es.append((entity_type,start_idx-s,end_idx-s,entity_str))
                 e_dict[j]=i
-                assert sent[i][es[1]:es[2]]==entity
+                assert sent[i][es[1]:es[2]]==entity_str
         ser.append([sent[i],es])
     for r,e1,e2 in relations:
         i1,i2 = e_dict[e1],e_dict[e2]
         assert i1==i2
-        t1,s1,e1 = entities[e1][0],entities[e1][1]-sent_range[i1][0],entities[e1][2]-sent_range[i1][0]
-        t2,s2,e2 = entities[e2][0],entities[e2][1]-sent_range[i1][0],entities[e2][2]-sent_range[i1][0]
-        ser[i1].append((r,(t1,s1,e1),(t2,s2,e2)))
+        t1,s1,e1,es1 = entities[e1][0],entities[e1][1]-sent_range[i1][0],entities[e1][2]-sent_range[i1][0],entities[e1][3]
+        t2,s2,e2,es2 = entities[e2][0],entities[e2][1]-sent_range[i1][0],entities[e2][2]-sent_range[i1][0],entities[e2][3]
+        ser[i1].append((r,(t1,s1,e1,es1),(t2,s2,e2,es2)))
     return ser
 
-def ser2tree(ser,tag,allow_impossible=False):
-    sent, ents, relas = ser
-    tree = {"sentence":sent}
-    if not allow_impossible:
-        for en in ents:
-            tree[en[0]]=tree.get(en[0],{}).update({en[1:]:{}})
-        for rel in relas:
-            r,head_en,tail_en = rel[0],rel[1],rel[2]
-            tree[head_en[0]][head_en[1:]][r] = tree[head_en[0]][head_en[1:]].get(r,tail_en)
-    else:
-        assert tag in ['ace2004','ace2005']
-        entities = ace2004_entities if tag=='ace2004' else ace2005_entities
-        relations = ace2004_relations if tag=='ace2004' else ace2005_relations
-        for en in entities:
-            tree[en] = {}
-        for en in ents:
-            tree[en[0]].update({en[1:]:{}})
-            for rel in relations:
-                tree[en[0]][en[1:]].update({rel:{}})
-        for re in relas:
-            r, head_en, tail_en = rel[0], rel[1], rel[2]
-            tree[head_en[0]][head_en[1:]][r] = None
-    return tree
 
 def get_question(head_entity,relation=None,end_entity=None):
     """
@@ -106,43 +93,19 @@ def sent2qas(ser,dataset_tag,allow_impossible=False):
     qat1 = {}
     for en in ents:
         question = get_question(en)
-        qat1[question] = qat1.get(question,[])+en
+        qat1[question] = qat1.get(question,[])+[en]
     #构造第二轮问答
     qat2 = {}
     for rel in relas:
         rel_type,head_ent,end_ent = rel
         question = get_question(head_ent,rel_type,end_ent)
-        qat2[question] = qat2.get(question,[])+end_ent
+        qat2[question] = qat2.get(question,[])+[rel]
     qas = [qat1,qat2]
-    res["qa_pairs":qas]
+    res["qa_pairs"]=qas
     return res
 
-def parse_ann(ann,offset=0):
-    """对.ann文件解析"""
-    ann_list = ann.split('\n')
-    ann_list = [an.split('\t') for an in ann_list if an]
-    for i, ann in enumerate(ann_list):
-        ann_list[i][1]=ann_list[i][1].split()
-        empty = []
-        for ai in ann_list[i]:
-            empty.extend(ai) if isinstance(ai,list) else empty.append(ai)
-        ann_list[i] = empty
-    entities = []
-    relations = []
-    for al in ann_list:
-        if al[0][0]=='T':
-            entities.append([al[0],al[1],int(al[2])+offset,int(al[3])+offset,al[4]])
-        else:
-            relations.append([al[0],al[1],al[2][5:],al[3][5:]])
-    return entities,relations
 
-def ace2004_processor(path):
-    pass
-
-def ace2005_processor(dataset_path,template_path):
-    """
-    对ace2005数据集进行处理
-    """
+def process(dataset_path):
     all_path = [os.path.join(dataset_path,t) for t in ['train','dev','test']]
     for p in all_path:
         #对文件进行处理
@@ -176,3 +139,12 @@ def ace2005_processor(dataset_path,template_path):
             json.dump(data,f)
 
 if __name__=="__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument(" --dataset_tag", choices=['ace2004', 'ace2005'], type=str)
+    parser.add_argument(" --dataset_path", type=str, help="数据集文件夹的路径")
+    parser.add_argument(" --query_template_path", type=str, help="query模板")
+    parser.add_argument(" --outputpath", type=str)
+    args = parser.parse_args()
+    process(args.dataset)
+    with open(args.query_template_path, encoding='utf-8') as f:
+        question_templates = json.load(f)

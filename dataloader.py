@@ -5,6 +5,7 @@ from torch.nn.utils.rnn import  pad_sequence
 from torch.utils.data import DataLoader
 logging.basicConfig(level=logging.DEBUG,format='%(asctime)s  %(message)s')
 
+tag_idxs = {'B':0,'M':1,'E':2,'S':3,'O':4}
 
 def collate_fn(batch):
     pass
@@ -86,13 +87,52 @@ class MyDataset:
                 "target_tag":self.target_tag[i],"tuen_mask":self.turn_mask[i]}
 
 def get_inputs(context,q,ans,tokenizer,max_len):
-    #首先将答案转化为tag
-    tags = []
-    for an in ans:
-        start,end,ent=an[1:]
-        f
+    """
+    Args:
+        context: 上下文句子
+        q: 问题
+        ans： 答案列表
+        max_len: 允许的最大的长度
+    Returns:
+        txt_ids: [CLS]question[SEP]context[SEP]编码后的句子
+        tags1: 对应的标注序列
+        context_mask： 用来确定context的位置
+    """
+    context1 = [tokenizer.tokenize(c) for c in context.split()]
+    context2 = tokenizer.tokenize(context)
+    assert sum(context1,[])==context2
+    query = tokenizer.tokenize(q)
+    #将答案转化为tag的标注
+    tags = [tag_idxs['O']]*len(context2)
+    for i,an in enumerate(ans):
+        if len(ans)==4:#第一轮对话的情况
+            start,end,ent_str=an[1:]
+        elif len(ans)==3:#提取尾实体的信息
+            start,end,ent_str=an[-1][1:]
+        s1 = [tokenizer.tokenize(t) for t in context[:start].split()]
+        s2 = tokenizer.tokenize(context[start:end])
+        assert sum(s1,[])==s2
+        new_start = sum([len(s) for s in s1])
+        new_end = new_start+len(s2)-1#这个end是取的闭区间
+        if new_start!=new_end:
+            tags[new_start]=tag_idxs['B']
+            tags[new_end]=tag_idxs['E']
+            tags[new_start+1:new_end]=tag_idxs['M']
+        else:
+            tags[new_start] = tag_idxs['S']
+    txt = ['[CLS]']+query+['[SEP]']+context2+['[SEP]']
+    txt_ids = tokenizer.convert_tokens_to_ids(txt)
+    #[CLS]的tag用来判断是否存在答案
+    tags1 = [tag_idxs['O'] if len(ans)>0 else -1]+[-1]*(len(query)+1)+tags+[-1]
+    context_mask = [1]+[0]*(len(query)+1)+[0]*len(context2)+[0]
+    return txt_ids,tags1,context_mask
+
 
 class MyDataset:
+    """
+    这里假设我们的一个样本是两轮问答，或者一轮问答（第二轮为空）
+    这可能导致第一轮问答被多个两轮问答作为首轮问答使用
+    """
     def __init__(self,path,tokenizer,max_len=521):
         with open(path,encoding='utf-8') as f:
             data = json.load(f)
@@ -102,9 +142,29 @@ class MyDataset:
             for t in qa_pairs:
                 t1 = t[0]
                 t2 = t[1]
-                for q,ans in t1.items():
-                    inputs = get_inputs(context,q,ans,tokenizer,max_len)
-    def
+                qas = []
+                t1_qas = []
+                t2_qas = []
+                dict1 = {}
+                dict2 = {}
+                for q,ans in t1.items():#有多少种实体类型，就有多少个第一轮问答
+                    txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
+                    t1_qas.append([txt_ids,tags,context_mask])
+                    ent_type = ans[0][0]
+                    dict1[ent_type] = dict1.get(ent_type,[])+[q]
+                for q,ans in t2.items():
+                    txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
+                    t2_qas.append([txt_ids,tags,context_mask])
+                    key = (ans[0][-1][0],ans[0][-1][1],ans[0][-1][2])
+                    dict2[key]=dict2.get(key,[])+[q]
+                #建立两轮问答的对应关系
+                for
+
+    def __len__(self):
+        pass
+
+    def __getitem__(self, item):
+        pass
 
 
 class BatchDataet:
