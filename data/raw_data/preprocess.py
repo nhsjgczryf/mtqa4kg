@@ -13,6 +13,22 @@ ace2004_relations = ['ART', 'EMP-ORG', 'GPE-AFF', 'OTHER-AFF', 'PER-SOC', 'PHYS'
 ace2005_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
 ace2005_relations = ['ART', 'GEN-AFF', 'ORG-AFF', 'PART-WHOLE', 'PER-SOC', 'PHYS']
 
+#这个后续可以优化，假设所有得组合都有可能
+ace2004_relation_triples = [(ent1,rela,ent2) for rela in ace2004_relations for ent1 in ace2004_entities for ent2 in ace2004_entities]
+ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
+
+parser = argparse.ArgumentParser()
+parser.add_argument(" --dataset_tag", choices=['ace2004', 'ace2005'], type=str)
+parser.add_argument(" --dataset_path", type=str, help="数据集文件夹的路径")
+parser.add_argument(" --query_template_path", type=str, help="query模板")
+parser.add_argument(" --outputpath", type=str)
+args = parser.parse_args()
+
+with open(args.query_template_path, encoding='utf-8') as f:
+    question_templates = json.load(f)
+entities = ace2004_entities if args.dataset_tag == 'ace2004' else ace2005_entities
+relations = ace2004_relations if args.dataset_tag == 'ace2004' else ace2005_relations
+relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2004_relation_triples
 
 def parse_ann(ann,offset=0):
     """对.ann文件解析"""
@@ -72,34 +88,54 @@ def get_sent_er(txt,entities,relations):
 def get_question(head_entity,relation=None,end_entity=None):
     """
     Args:
-        head_entity: (entity_type,start_idx,end_idx,entity_string)
+        head_entity: (entity_type,start_idx,end_idx,entity_string) or entity_type
         relation: (relation_type,start_entity,end_entity)
-        end_entity:(entity_type,start_idx,end_idx,entity_string)
+        end_entity:(entity_type,start_idx,end_idx,entity_string) or entity_type
     """
     if relation==None:
-        question = question_templates['qa_turn1'][head_entity[0]]
+        question = question_templates['qa_turn1'][head_entity[0]] if  isinstance(head_entity,tuple) else question_templates['qa_turn1'][head_entity]
     else:
-        question = question_templates['qa_turn2'][(head_entity[0],relation[0],end_entity[0])]
+        end_entity = end_entity[0] if isinstance(end_entity,tuple) else end_entity
+        question = question_templates['qa_turn2'][(head_entity[0],relation[0],end_entity)]
         question = question.replace('XXX',head_entity[3])
     return question
 
 
-def sent2qas(ser,dataset_tag,allow_impossible=False):
-    #todo: 暂时不考虑impossible的问题
+def sent2qas(ser,allow_impossible=False):
     sent, ents, relas = ser
     res = {'context':sent}
-    qas = []
-    #构造第一轮问答
-    qat1 = {}
-    for en in ents:
-        question = get_question(en)
-        qat1[question] = qat1.get(question,[])+[en]
-    #构造第二轮问答
-    qat2 = {}
-    for rel in relas:
-        rel_type,head_ent,end_ent = rel
-        question = get_question(head_ent,rel_type,end_ent)
-        qat2[question] = qat2.get(question,[])+[rel]
+    if not allow_impossible:
+        #构造第一轮问答
+        qat1 = {}
+        for en in ents:
+            question = get_question(en)
+            qat1[question] = qat1.get(question,[])+[en]
+        #构造第二轮问答
+        qat2 = {}
+        for rel in relas:
+            rel_type,head_ent,end_ent = rel
+            question = get_question(head_ent,rel_type,end_ent)
+            qat2[question] = qat2.get(question,[])+[rel]
+    else:
+        #构造一轮问答
+        dict1 = {k:get_question(k) for k in entities}
+        qat1 = {k:[] for k in dict1}
+        for en in ents:
+            q = dict1[en[0]]
+            qat1[q].append(en)
+        #构造第二轮问答
+        dict2 = {}
+        for ent in ents:
+            for rel_type in relations:
+                for ent_type in entities:
+                    k = (ent[0],rel_type,ent_type)
+                    if k in relation_triples:
+                        dict2[k]=get_question(*k)
+        qat2 = {k:[] for k in dict2}
+        for rel in relas:
+            head_ent, rela_type, end_ent = rel
+            k = (head_ent[0],rela_type,end_ent[0])
+            qat2[k].append(rel)
     qas = [qat1,qat2]
     res["qa_pairs"]=qas
     return res
@@ -139,12 +175,3 @@ def process(dataset_path):
             json.dump(data,f)
 
 if __name__=="__main__":
-    parser = argparse.ArgumentParser()
-    parser.add_argument(" --dataset_tag", choices=['ace2004', 'ace2005'], type=str)
-    parser.add_argument(" --dataset_path", type=str, help="数据集文件夹的路径")
-    parser.add_argument(" --query_template_path", type=str, help="query模板")
-    parser.add_argument(" --outputpath", type=str)
-    args = parser.parse_args()
-    process(args.dataset)
-    with open(args.query_template_path, encoding='utf-8') as f:
-        question_templates = json.load(f)

@@ -3,12 +3,38 @@ import logging
 import torch
 from torch.nn.utils.rnn import  pad_sequence
 from torch.utils.data import DataLoader
+import random
+from transformers import BertTokenizer
 logging.basicConfig(level=logging.DEBUG,format='%(asctime)s  %(message)s')
 
 tag_idxs = {'B':0,'M':1,'E':2,'S':3,'O':4}
 
 def collate_fn(batch):
-    pass
+    turn_mask = []
+    nbatch = {}
+    for b in batch:
+        for i,t in enumerate(b):
+            turn_mask.append(i)
+            for k,v in t.items():
+                nbatch[k]=nbatch.get(k,[])+[v]
+    txt_ids = b['txt_ids']
+    tags = b['tags']
+    context_mask = b['context_mask']
+    #下面进行padding操作
+    blen = max([len(t) for t in txt_ids])
+    ntxt_ids = pad_sequence(txt_ids,batch_first=True,padding_value=-1)
+    ntags = pad_sequence(tags,batch_first=True,padding_value=-1)
+    ncontext_mask = pad_sequence(context_mask,batch_first=True,padding_value=-1)
+    attention_mask = torch.zeros(ntxt_ids.shape)
+    for i in range(len(ntxt_ids)):
+        txt_len = len(txt_ids[i])
+        attention_mask[:txt_len]=1
+    nbatch['txt_ids']=ntxt_ids
+    nbatch['tags']=ntags
+    nbatch['context_mask']=ncontext_mask
+    nbatch['attention_mask']=attention_mask
+    nbatch['turn_mask']=torch.tensor(turn_mask,dtype=torch.uint8)
+    return nbatch
 
 def trans(tokenizer,context,tags):
     """
@@ -31,7 +57,7 @@ def trans(tokenizer,context,tags):
         context2.extend(c)
     return context2,tags1
 
-class MyDataset:
+class MyDataset1:
     '''
     这个类支持两种构造python
     '''
@@ -69,21 +95,19 @@ class MyDataset:
             texts = texts + [[]*(max_turn-turn_num)]
             max_seq_len = max([len(t) for t in texts])
             text_ids = []
-            for i in range(max_turn):
-                text_id =
-                torch.full()
+
 
     def batch_by_token(self):
         pass
 
-    def batch_by_num(selfs):
+    def batch_by_num(self):
         pass
 
     def __len__(self):
         return len(self.text_ids)
 
     def __getitem__(self, i):
-        return {'text_ids':self.text_ids[i],"token_type_ids":self.token_type_ids[i],"attention_mask":self.attention_mask[i]
+        return {'text_ids':self.text_ids[i],"token_type_ids":self.token_type_ids[i],"attention_mask":self.attention_mask[i],
                 "target_tag":self.target_tag[i],"tuen_mask":self.turn_mask[i]}
 
 def get_inputs(context,q,ans,tokenizer,max_len):
@@ -120,6 +144,10 @@ def get_inputs(context,q,ans,tokenizer,max_len):
             tags[new_start+1:new_end]=tag_idxs['M']
         else:
             tags[new_start] = tag_idxs['S']
+    txt_len = len(query)+len(context2)+3
+    if txt_len>max_len:
+        context2 = context2[:max_len-len(query)-3]
+        tags = tags[:max_len-len(query)-3]
     txt = ['[CLS]']+query+['[SEP]']+context2+['[SEP]']
     txt_ids = tokenizer.convert_tokens_to_ids(txt)
     #[CLS]的tag用来判断是否存在答案
@@ -136,6 +164,7 @@ class MyDataset:
     def __init__(self,path,tokenizer,max_len=521):
         with open(path,encoding='utf-8') as f:
             data = json.load(f)
+        self.all_qas = []
         for d in data:
             context = d['context']
             qa_pairs = d['qa_pairs']
@@ -145,35 +174,68 @@ class MyDataset:
                 qas = []
                 t1_qas = []
                 t2_qas = []
-                dict1 = {}
-                dict2 = {}
-                for q,ans in t1.items():#有多少种实体类型，就有多少个第一轮问答
+                dict1 = {}#key:i,value:t1[i][ans],value是一个实体的列表
+                dict2 = {}#key:t2[i][ans][0],value:i,
+                for i,(q,ans) in enumerate(t1.items()):#这里的ans是某种类型的实体的列表
                     txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
-                    t1_qas.append([txt_ids,tags,context_mask])
-                    ent_type = ans[0][0]
-                    dict1[ent_type] = dict1.get(ent_type,[])+[q]
-                for q,ans in t2.items():
+                    t1_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask})
+                    dict1[i] = ans
+                for i,(q,ans) in enumerate(t2.items()):
                     txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
-                    t2_qas.append([txt_ids,tags,context_mask])
+                    t2_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask})
                     key = (ans[0][-1][0],ans[0][-1][1],ans[0][-1][2])
                     dict2[key]=dict2.get(key,[])+[q]
-                #建立两轮问答的对应关系
-                for
+                    dict2[ans[0][0]]=dict2.get(ans[0][0],[])+[i]
+                #建立两轮问答的对关系
+                for i,ans1 in dict1.items():
+                    if len(ans1)>0:
+                        for an in ans1:
+                            assert dict2[an]!=0#所有的头实体都应该存在第二轮问答的
+                            for j in dict2[an]:
+                                qas.append([t1_qas[i],t2_qas[j]])
+                    else:
+                        #只有一轮问答的情况
+                        qas.append([t1_qas[i]])
+            self.all_qas.extend(qas)
 
     def __len__(self):
-        pass
+        #返回有多少个完整的问答（可能是一轮，也可能是两轮）
+        return len(self.all_qas)
 
-    def __getitem__(self, item):
-        pass
-
-
-class BatchDataet:
-    """
-    这个类用于DistributedDataParallel训练，主要是把一个batch封装为Dataset里的一个Item
-    """
-    def __init__(self,path, max_tokens):
-        pass
-    def __len__(self):
-        pass
     def __getitem__(self, i):
-        pass
+        return self.all_qas[i]
+
+
+class MyDownSampler:
+    """对负样本样本进行下采样"""
+    def __init__(self,dataset,ratio=1):
+        """
+        Args:
+            ratio:正负样本的比例
+        """
+        self.ratio = ratio
+        self.dataset = dataset
+        #统计得到正/负样本的index
+        self.positive_idxs = []
+        self.negative_idxs = []
+        for i in range(len(dataset)):
+            d = dataset[i]
+            if d[-1]['tags'][0]==-1:
+                self.negative_idxs.append(i)
+            else:
+                self.positive_idxs.append(i)
+        indexs = self.positive_idxs+random.sample(self.negative_idxs,len(self.positive_idxs)*self.ratio)
+        indexs = random.sample(indexs,len(indexs))
+        self.indexs = indexs
+    def __iter__(self):
+        return self.indexs
+    def __len__(self):
+        return len(self.indexs)
+
+
+def load_data(file_path,batch_size,max_len,pretrained_model_path,down_ratio=1):
+    tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
+    dataset = MyDataset(file_path,tokenizer)
+    sampler = MyDownSampler(dataset,down_ratio)
+    dataloader = DataLoader(dataset,batch_size,sampler=sampler)
+    return dataloader
