@@ -5,7 +5,6 @@ from torch.nn.utils.rnn import  pad_sequence
 from torch.utils.data import DataLoader
 import random
 from transformers import BertTokenizer
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s  %(message)s')
 
 tag_idxs = {'B':0,'M':1,'E':2,'S':3,'O':4}
 
@@ -20,11 +19,13 @@ def collate_fn(batch):
     txt_ids = b['txt_ids']
     tags = b['tags']
     context_mask = b['context_mask']
+    token_type_ids = b['token_type_ids']
     #下面进行padding操作
     blen = max([len(t) for t in txt_ids])
     ntxt_ids = pad_sequence(txt_ids,batch_first=True,padding_value=-1)
     ntags = pad_sequence(tags,batch_first=True,padding_value=-1)
     ncontext_mask = pad_sequence(context_mask,batch_first=True,padding_value=-1)
+    ntoken_type_ids = pad_sequence(token_type_ids,batch_first=True,padding_value=-1)
     attention_mask = torch.zeros(ntxt_ids.shape)
     for i in range(len(ntxt_ids)):
         txt_len = len(txt_ids[i])
@@ -36,81 +37,7 @@ def collate_fn(batch):
     nbatch['turn_mask']=torch.tensor(turn_mask,dtype=torch.uint8)
     return nbatch
 
-def trans(tokenizer,context,tags):
-    """
-    将原始的query和context进行subword tokenize处理
-    :param tags: 是一轮对话的所有tag，所以是一个双重列表
-    """
-    #context用空白作为单词的分隔符
-    context = context.split()
-    context1 = []
-    tags1 = []
-    for c in context:
-        context1.append(tokenizer.tokenize(c))
-    for i in range(len(tags)):
-        tag = []
-        for j,cs in enumerate(context1):
-            tag.extend([tags[i][j]]*len(cs))
-        tags1.append(tag)
-    context2 = []
-    for c in context1:
-        context2.extend(c)
-    return context2,tags1
-
-class MyDataset1:
-    '''
-    这个类支持两种构造python
-    '''
-    def __init__(self,path,tokenizer,max_turn,max_len=512,batch_size=-1,max_tokens=-1):
-        """
-        Desc:
-            支持两种构造数据集的方式，
-            第一种是不考虑样本长度不平衡的现象，直接进行batch采样
-            第二种是以max_token的方式
-        Args:
-            path: 文件路径，文件中的内容为
-            max_turn: 对话的轮数
-            max_tokens: 一个batch里所包含的最多的token的数量
-            max_len: 允许的最大输入长度
-        """
-        self.text_ids = []
-        self.token_type_ids = []
-        self.attention_mask = []
-        self.target_tag = []
-        self.turn_mask = []
-        with open(path,encoding='utf-8') as f:
-            self.data = json.load(f)
-        for d in self.batch:
-            context = d['context']
-            querys = d['querys']#querys是一轮对话的k个query
-            tags = d['tags']#context对应的标注序列
-            turn_num = len(querys)
-            querys1 = [tokenizer.tokenize(query.split()) for query in querys]
-            context1, tags1 = trans(tokenizer,context,tags)
-            texts = []
-            for i in range(turn_num):
-                text = ['CLS']+querys1[i]+['SEP']+context1+['SEP']
-                text = tokenizer.convert_tokens_to_ids(text)
-                texts.append(text)
-            texts = texts + [[]*(max_turn-turn_num)]
-            max_seq_len = max([len(t) for t in texts])
-            text_ids = []
-
-
-    def batch_by_token(self):
-        pass
-
-    def batch_by_num(self):
-        pass
-
-    def __len__(self):
-        return len(self.text_ids)
-
-    def __getitem__(self, i):
-        return {'text_ids':self.text_ids[i],"token_type_ids":self.token_type_ids[i],"attention_mask":self.attention_mask[i],
-                "target_tag":self.target_tag[i],"tuen_mask":self.turn_mask[i]}
-
-def get_inputs(context,q,ans,tokenizer,max_len):
+def get_inputs(context,q,ans,tokenizer,max_len=200):
     """
     Args:
         context: 上下文句子
@@ -153,7 +80,8 @@ def get_inputs(context,q,ans,tokenizer,max_len):
     #[CLS]的tag用来判断是否存在答案
     tags1 = [tag_idxs['O'] if len(ans)>0 else -1]+[-1]*(len(query)+1)+tags+[-1]
     context_mask = [1]+[0]*(len(query)+1)+[0]*len(context2)+[0]
-    return txt_ids,tags1,context_mask
+    token_type_ids = [0]*(len(query)+2)+[1]*(len(context2)+1)
+    return txt_ids,tags1,context_mask,token_type_ids
 
 
 class MyDataset:
@@ -161,7 +89,7 @@ class MyDataset:
     这里假设我们的一个样本是两轮问答，或者一轮问答（第二轮为空）
     这可能导致第一轮问答被多个两轮问答作为首轮问答使用
     """
-    def __init__(self,path,tokenizer,max_len=521):
+    def __init__(self,path,tokenizer,max_len=512):
         with open(path,encoding='utf-8') as f:
             data = json.load(f)
         self.all_qas = []
@@ -177,12 +105,12 @@ class MyDataset:
                 dict1 = {}#key:i,value:t1[i][ans],value是一个实体的列表
                 dict2 = {}#key:t2[i][ans][0],value:i,
                 for i,(q,ans) in enumerate(t1.items()):#这里的ans是某种类型的实体的列表
-                    txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
-                    t1_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask})
+                    txt_ids,tags,context_mask,token_type_ids = get_inputs(context,q,ans,tokenizer,max_len)
+                    t1_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask,"token_type_ids":token_type_ids})
                     dict1[i] = ans
                 for i,(q,ans) in enumerate(t2.items()):
-                    txt_ids,tags,context_mask = get_inputs(context,q,ans,tokenizer,max_len)
-                    t2_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask})
+                    txt_ids,tags,context_mask,token_type_ids = get_inputs(context,q,ans,tokenizer,max_len)
+                    t2_qas.append({"txt_ids":txt_ids,"tags":tags,"context_mask":context_mask,"token_type_ids":token_type_ids})
                     key = (ans[0][-1][0],ans[0][-1][1],ans[0][-1][2])
                     dict2[key]=dict2.get(key,[])+[q]
                     dict2[ans[0][0]]=dict2.get(ans[0][0],[])+[i]
@@ -239,3 +167,6 @@ def load_data(file_path,batch_size,max_len,pretrained_model_path,down_ratio=1):
     sampler = MyDownSampler(dataset,down_ratio)
     dataloader = DataLoader(dataset,batch_size,sampler=sampler)
     return dataloader
+
+if __name__=="__main__":
+    pass

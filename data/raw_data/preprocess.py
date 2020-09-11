@@ -6,29 +6,103 @@ import argparse
 import json
 import nltk
 
+parser = argparse.ArgumentParser()
+parser.add_argument("--dataset_tag",default='ace2005', choices=['ace2004', 'ace2005'],  type=str)
+parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\DELL\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
+parser.add_argument("--query_template_path",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
+parser.add_argument("--allow_impossible",action="store_true")
+parser.add_argument("--window_size",type=int,default=100)
+parser.add_argument("--overlap",type=int,default=50)
+parser.add_argument("--output_dir", default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
+args = parser.parse_args()
+
 
 ace2004_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
 ace2004_relations = ['ART', 'EMP-ORG', 'GPE-AFF', 'OTHER-AFF', 'PER-SOC', 'PHYS']
 
 ace2005_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
+ace2005_entities_full = ["facility","geo political","location","organization","person","vehicle","weapon"]
 ace2005_relations = ['ART', 'GEN-AFF', 'ORG-AFF', 'PART-WHOLE', 'PER-SOC', 'PHYS']
+ace2005_relations_full = ["artifact","gen affilliation",'organization affiliation','part whole','person social','physical']
 
 #这个后续可以优化，假设所有得组合都有可能
 ace2004_relation_triples = [(ent1,rela,ent2) for rela in ace2004_relations for ent1 in ace2004_entities for ent2 in ace2004_entities]
-ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
+#ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
 
-parser = argparse.ArgumentParser()
-parser.add_argument(" --dataset_tag", choices=['ace2004', 'ace2005'], type=str)
-parser.add_argument(" --dataset_path", type=str, help="数据集文件夹的路径")
-parser.add_argument(" --query_template_path", type=str, help="query模板")
-parser.add_argument(" --outputpath", type=str)
-args = parser.parse_args()
+ace2005_relation_st = {
+    'PHY':{
+        'ARG1':[
+            ['PER'],
+            ['PER','FAC','GPE','LOC']
+        ],
+        'ARG2':[
+            ['FAC','LOC','GPE'],
+            ['FAC','GPE','LOC']
+        ]
+    },
+    'PART-WHOLE':{
+        'ARG1':[
+            ['FAC','LOC','GPE'],
+            ['ORG'],
+            ['VEH'],
+            ['WEA']
+        ],
+        'ARG2':[
+            ['FAC','LOC','GPE'],
+            ['ORG','GPE'],
+            ['VEH'],
+            ['WEA']
+        ]
+    },
+    'PER-SOC':{
+        'ARG1':[
+            ['PER']
+        ],
+        'ARG2':[
+            ['PER']
+        ]
+    },
+    'ORG-AFF':{
+        'ARG1':[
+            ['PER','ORG','GPE']
+        ],
+        'ARG2':[
+            ['ORG','GPE'],
+        ]
+    },
+    'ART':{
+        'ARG1':[
+            ['PER', 'ORG', 'GPE']
+        ],
+        'ARG2':[
+            ['WEA','VEH','FAC']
+        ]
+    },
+    'GEN-AFF':{
+        'ARG1':[
+            ['PER'],
+            ['ORG']
+        ],
+        'ARG2':[
+            ['PER','LOC','GPE','ORG'],
+            ['LOC','GPE']
+        ]
+    }
+
+}
+ace2005_relation_triples = []
+for rel in ace2005_relation_st:
+    arg1 = rel['ARG1']
+    arg2 = rel['ARG2']
+    for a1s,a2s in zip(arg1,arg2):
+        for a1,a2 in zip(a1s,a2s):
+            ace2005_relation_triples.append((a1,rel,a2))
 
 with open(args.query_template_path, encoding='utf-8') as f:
     question_templates = json.load(f)
 entities = ace2004_entities if args.dataset_tag == 'ace2004' else ace2005_entities
 relations = ace2004_relations if args.dataset_tag == 'ace2004' else ace2005_relations
-relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2004_relation_triples
+relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2005_relation_triples
 
 def parse_ann(ann,offset=0):
     """对.ann文件解析"""
@@ -44,10 +118,94 @@ def parse_ann(ann,offset=0):
     relations = []
     for al in ann_list:
         if al[0][0]=='T':
-            entities.append([al[0],al[1],int(al[2])+offset,int(al[3])+offset,al[4]])
+            entities.append([al[1],int(al[2])+offset,int(al[3])+offset,al[4]])
         else:
-            relations.append([al[0],al[1],al[2][5:],al[3][5:]])
+            relations.append([al[1],al[2][5:],al[3][5:]])
     return entities,relations
+
+def aligment_ann(original, newtext, ann_file, offset):
+    annotation = []
+    terms = {}
+    ends = {}
+    for line in open(ann_file):
+        if line.startswith('T'):
+            annots = line.rstrip().split("\t", 2)
+            typeregion = annots[1].split(" ")
+            start = int(typeregion[1]) - offset
+            end = int(typeregion[2]) - offset
+            if not start in terms:
+                terms[start] = []
+            if not end in ends:
+                ends[end] = []
+            if len(annots) == 3:
+                terms[start].append([start, end, annots[0], typeregion[0], annots[2]])
+            else:
+                terms[start].append([start, end, annots[0], typeregion[0], ""])
+            ends[end].append(start)
+        else:
+            annotation.append(line)
+    orgidx = 0
+    newidx = 0
+    orglen = len(original)
+    newlen = len(newtext)
+
+    while orgidx < orglen and newidx < newlen:
+        if original[orgidx] == newtext[newidx]:
+            orgidx += 1
+            newidx += 1
+        elif newtext[newidx] == '\n':
+            newidx += 1
+        elif original[orgidx] == '\n':
+            orgidx += 1
+        elif newtext[newidx] == ' ':
+            newidx += 1
+        elif original[orgidx] == ' ':
+            orgidx += 1
+        elif newtext[newidx] == '\t':
+            newidx += 1
+        elif original[orgidx] == '\t':
+            orgidx += 1
+        elif newtext[newidx] == '.':
+            # ignore extra "." for stanford
+            newidx += 1
+        else:
+            assert False, "%d\t$%s$\t$%s$" % (orgidx, original[orgidx:orgidx + 20], newtext[newidx:newidx + 20])
+        if orgidx in terms:
+            for l in terms[orgidx]:
+                l[0] = newidx
+        if orgidx in ends:
+            for start in ends[orgidx]:
+                for l in terms[start]:
+                    if l[1] == orgidx:
+                        l[1] = newidx
+            del ends[orgidx]
+    entities = []
+    relations = []
+    dict1 = {}
+    i=0
+    for ts in terms.values():
+        for term in ts:
+            if term[4]=="":
+                entities.append([term[2], term[3], term[0], term[1], newtext[term[0]:term[1]]])
+            else:
+                assert newtext[term[0]:term[1]].replace("&AMP;", "&").replace("&amp;", "&").replace(" ", "").replace(
+                    "\n", "") == term[4].replace(" ", ""), newtext[term[0]:term[1]] + "<=>" + term[4]
+                entities.append([term[2], term[3], term[0], term[1], newtext[term[0]:term[1]].replace("\n", " ")])
+            dict1[term[2]] = i
+            i += 1
+    for rel in annotation:
+        rel_id,rel_type,rel_e1,rel_e2 = rel.strip().split()
+        rel_e1 = rel_e1[5:]
+        rel_e2 = rel_e2[5:]
+        relations.append([rel_id,rel_type,rel_e1,rel_e2])
+    relations1 = []
+    for rel in relations:
+        _,rel_type,rel_e1,rel_e2=rel
+        rel_e1_idx = dict1[rel_e1]
+        rel_e2_idx = dict1[rel_e2]
+        relations1.append([rel_type,rel_e1_idx,rel_e2_idx])
+    entities1 = [[ent[1],ent[2],ent[3],ent[4]] for ent in entities]
+    return entities1,relations1
 
 def get_sent_er(txt,entities,relations):
     """
@@ -55,48 +213,54 @@ def get_sent_er(txt,entities,relations):
     Args:
         txt: 待处理的文本
         entities: 对应的实体标注，是四元组(entity_type, start_idx, end_idx,entity)的列表,不包含end_idx的内容
-        relations: 对应的关系标注,(relation_type,entity1,entity2)三元组的列表
+        relations: 对应的关系标注,(relation_type,entity1_idx,entity2_idx)三元组的列表，其中entity_idx是对应的entity在entities列表中的
     Returns:
         句子级别的标注,list of [句子，实体列表，关系列表]
     """
     sent = nltk.sent_tokenize(txt)
     sent_idx = [0]
     for i,s in enumerate(sent):
-        sent_idx.append(sent_idx[-1]+len(s)+i)
+        sent_idx.append(sent_idx[-1]+len(s)+1)
     sent_range = []#每个句子在txt中对应的索引
     for i in range(1,len(sent_idx)):
         sent_range.append((sent_idx[i-1],sent_idx[i]-1))
-    ser = []#元素为[句子，实体列表，关系列表]的列表
+    ser = [["",[],[]] for i in range(len(sent_range))]#元素为[句子，实体列表，关系列表]的列表
     e_dict = {}#用来记录某个实体对应在哪个句子
-    for i,s,e in enumerate(sent_range):
+    for i,(s,e) in enumerate(sent_range):
         es = []#实体集合
         for j,(entity_type, start_idx, end_idx,entity_str) in enumerate(entities):
             if start_idx>=s and end_idx<=e:
-                es.append((entity_type,start_idx-s,end_idx-s,entity_str))
-                e_dict[j]=i
-                assert sent[i][es[1]:es[2]]==entity_str
-        ser.append([sent[i],es])
+                nstart_idx,nend_idx = start_idx-s,end_idx-s
+                if sent[i][nstart_idx:nend_idx]==entity_str:
+                    es.append((entity_type,nstart_idx,nend_idx,entity_str))
+                    e_dict[j]=i
+                else:
+                    print("为什么会不一致？")
+        ser[i][0]=sent[i]
+        ser[i][1].extend(es)
     for r,e1,e2 in relations:
+        if e1 not in e_dict or e2 not in e_dict:
+            print("实体丢失引起关系出错！")
+            continue
         i1,i2 = e_dict[e1],e_dict[e2]
-        assert i1==i2
-        t1,s1,e1,es1 = entities[e1][0],entities[e1][1]-sent_range[i1][0],entities[e1][2]-sent_range[i1][0],entities[e1][3]
-        t2,s2,e2,es2 = entities[e2][0],entities[e2][1]-sent_range[i1][0],entities[e2][2]-sent_range[i1][0],entities[e2][3]
-        ser[i1].append((r,(t1,s1,e1,es1),(t2,s2,e2,es2)))
+        if i1==i2:
+            t1,s1,e1,es1 = entities[e1][0],entities[e1][1]-sent_range[i1][0],entities[e1][2]-sent_range[i1][0],entities[e1][3]
+            t2,s2,e2,es2 = entities[e2][0],entities[e2][1]-sent_range[i1][0],entities[e2][2]-sent_range[i1][0],entities[e2][3]
+            ser[i1][2].append((r,(t1,s1,e1,es1),(t2,s2,e2,es2)))
+        else:
+            print("关系的两个实体不在一个句子上")
     return ser
 
 
-def get_question(head_entity,relation=None,end_entity=None):
+def get_question(head_entity,relation_type=None,end_entity_type=None):
     """
     Args:
         head_entity: (entity_type,start_idx,end_idx,entity_string) or entity_type
-        relation: (relation_type,start_entity,end_entity)
-        end_entity:(entity_type,start_idx,end_idx,entity_string) or entity_type
     """
-    if relation==None:
+    if relation_type==None:
         question = question_templates['qa_turn1'][head_entity[0]] if  isinstance(head_entity,tuple) else question_templates['qa_turn1'][head_entity]
     else:
-        end_entity = end_entity[0] if isinstance(end_entity,tuple) else end_entity
-        question = question_templates['qa_turn2'][(head_entity[0],relation[0],end_entity)]
+        question = question_templates['qa_turn2'][str((head_entity[0],relation_type,end_entity_type))]
         question = question.replace('XXX',head_entity[3])
     return question
 
@@ -114,12 +278,12 @@ def sent2qas(ser,allow_impossible=False):
         qat2 = {}
         for rel in relas:
             rel_type,head_ent,end_ent = rel
-            question = get_question(head_ent,rel_type,end_ent)
+            question = get_question(head_ent,rel_type,end_ent[0])
             qat2[question] = qat2.get(question,[])+[rel]
     else:
         #构造一轮问答
         dict1 = {k:get_question(k) for k in entities}
-        qat1 = {k:[] for k in dict1}
+        qat1 = {dict1[k]:[] for k in dict1}
         for en in ents:
             q = dict1[en[0]]
             qat1[q].append(en)
@@ -128,21 +292,23 @@ def sent2qas(ser,allow_impossible=False):
         for ent in ents:
             for rel_type in relations:
                 for ent_type in entities:
-                    k = (ent[0],rel_type,ent_type)
-                    if k in relation_triples:
+                    tk = (ent[0],rel_type,ent_type)
+                    if tk in relation_triples:
+                        k = (ent,rel_type,ent_type)
                         dict2[k]=get_question(*k)
-        qat2 = {k:[] for k in dict2}
+        qat2 = {dict2[k]:[] for k in dict2}
         for rel in relas:
-            head_ent, rela_type, end_ent = rel
-            k = (head_ent[0],rela_type,end_ent[0])
-            qat2[k].append(rel)
+            rela_type,head_ent,end_ent = rel
+            k = (head_ent,rela_type,end_ent[0])
+            q = dict2[k]
+            qat2[q].append(rel)
     qas = [qat1,qat2]
     res["qa_pairs"]=qas
     return res
 
 
-def process(dataset_path):
-    all_path = [os.path.join(dataset_path,t) for t in ['train','dev','test']]
+def process(dataset_dir,allow_impossible=False):
+    all_path = [os.path.join(dataset_dir, t) for t in ['train', 'dev', 'test']]
     for p in all_path:
         #对文件进行处理
         ann_files = []
@@ -150,28 +316,29 @@ def process(dataset_path):
         data = []
         for i in os.listdir(p):
             if i.endswith('txt'):
-                txt_files.append(i)
+                txt_files.append(os.path.join(p,i))
             else:
-                ann_files.append(i)
+                ann_files.append(os.path.join(p,i))
         for ann_path,txt_path in zip(ann_files,txt_files):
             with open(txt_path,encoding='utf-8') as f:
                 raw_txt =f.read()
                 txt = [t for t in raw_txt.split('\n') if t.strip()]
-            with open(ann_path,encoding='utf-8') as f:
-                ann = f.read()
             #去掉前三行无用的信息
             ntxt = "\n".join(txt[3:])
             #得到偏移量
             offset = raw_txt.index(txt[3])# 得到第一个句子的偏移
             #解析得到实体和关系
-            entities, relations = parse_ann(ann,offset)
+            #entities, relations = parse_ann(ann,offset)
+            entities,relations = aligment_ann(raw_txt[offset:],ntxt,ann_path,offset)
             #得到每个句子里面的实体以及关系
             sent_er = get_sent_er(ntxt,entities,relations)
             #开始构造数据集
             for ser in sent_er:
-                data.append(sent2qas(ser))
-        save_path = os.path.join(args.outputpath,os.path.split(p)[-1])
-        with open(save_path,encoding='utf-8') as f:
+                data.append(sent2qas(ser,allow_impossible))
+        save_path = os.path.join(args.output_dir,os.path.split(p)[-1]+".json")
+        with open(save_path,'w',encoding='utf-8') as f:
             json.dump(data,f)
 
 if __name__=="__main__":
+    #process(args.dataset_dir)
+    process(args.dataset_dir,allow_impossible=False)
