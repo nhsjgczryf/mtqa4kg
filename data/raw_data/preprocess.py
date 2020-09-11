@@ -8,12 +8,12 @@ import nltk
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset_tag",default='ace2005', choices=['ace2004', 'ace2005'],  type=str)
-parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\DELL\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
-parser.add_argument("--query_template_path",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
+parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\hkcs\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
+parser.add_argument("--query_template_path",default=r"C:\Users\hkcs\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
 parser.add_argument("--allow_impossible",action="store_true")
 parser.add_argument("--window_size",type=int,default=100)
 parser.add_argument("--overlap",type=int,default=50)
-parser.add_argument("--output_dir", default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
+parser.add_argument("--output_dir", default=r"C:\Users\hkcs\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
 args = parser.parse_args()
 
 
@@ -30,7 +30,7 @@ ace2004_relation_triples = [(ent1,rela,ent2) for rela in ace2004_relations for e
 #ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
 
 ace2005_relation_st = {
-    'PHY':{
+    'PHYS':{
         'ARG1':[
             ['PER'],
             ['PER','FAC','GPE','LOC']
@@ -88,15 +88,16 @@ ace2005_relation_st = {
             ['LOC','GPE']
         ]
     }
-
 }
 ace2005_relation_triples = []
-for rel in ace2005_relation_st:
-    arg1 = rel['ARG1']
-    arg2 = rel['ARG2']
+for rel,val in ace2005_relation_st.items():
+    arg1 = val['ARG1']
+    arg2 = val['ARG2']
     for a1s,a2s in zip(arg1,arg2):
-        for a1,a2 in zip(a1s,a2s):
-            ace2005_relation_triples.append((a1,rel,a2))
+        for a1 in a1s:
+            for a2 in a2s:
+                if (a1,rel,a2) not in ace2005_relation_triples:
+                    ace2005_relation_triples.append((a1,rel,a2))
 
 with open(args.query_template_path, encoding='utf-8') as f:
     question_templates = json.load(f)
@@ -207,7 +208,26 @@ def aligment_ann(original, newtext, ann_file, offset):
     entities1 = [[ent[1],ent[2],ent[3],ent[4]] for ent in entities]
     return entities1,relations1
 
-def get_sent_er(txt,entities,relations):
+def chunk_passage(txt,window_size,overlap):
+    """
+    对txt进行滑窗切块处理，返回被切分后的文本块，以及对应的文本块在原txt中的起止位置，
+    注意这里的滑窗以空白符分隔后的token为基本单位
+    """
+    words = txt.split()
+    assert " ".join(words)==txt
+    chunks = []
+    regions = []
+    for i in range(0,len(words),window_size-overlap):
+        c = words[i:i+window_size]
+        c1 = " ".join(c)
+        chunks.append(c1)
+        c_start = len(" ".join(words[:i]))+1 if i!=0 else 0
+        c_end = c_start+len(c1)
+        regions.append((c_start,c_end))
+    return chunks,regions
+
+
+def get_sent_er(txt,entities,relations,window_size,overlap):
     """
     得到句子级别的标注
     Args:
@@ -217,13 +237,14 @@ def get_sent_er(txt,entities,relations):
     Returns:
         句子级别的标注,list of [句子，实体列表，关系列表]
     """
-    sent = nltk.sent_tokenize(txt)
-    sent_idx = [0]
-    for i,s in enumerate(sent):
-        sent_idx.append(sent_idx[-1]+len(s)+1)
-    sent_range = []#每个句子在txt中对应的索引
-    for i in range(1,len(sent_idx)):
-        sent_range.append((sent_idx[i-1],sent_idx[i]-1))
+    #sent = nltk.sent_tokenize(txt)
+    #sent_idx = [0]
+    #for i,s in enumerate(sent):
+    #    sent_idx.append(sent_idx[-1]+len(s)+1)
+    #sent_range = []#每个句子在txt中对应的索引
+    #for i in range(1,len(sent_idx)):
+    #    sent_range.append((sent_idx[i-1],sent_idx[i]-1))
+    sent,sent_range = chunk_passage(txt,window_size,overlap)
     ser = [["",[],[]] for i in range(len(sent_range))]#元素为[句子，实体列表，关系列表]的列表
     e_dict = {}#用来记录某个实体对应在哪个句子
     for i,(s,e) in enumerate(sent_range):
@@ -233,24 +254,25 @@ def get_sent_er(txt,entities,relations):
                 nstart_idx,nend_idx = start_idx-s,end_idx-s
                 if sent[i][nstart_idx:nend_idx]==entity_str:
                     es.append((entity_type,nstart_idx,nend_idx,entity_str))
-                    e_dict[j]=i
+                    e_dict[j]=e_dict.get(j,[])+[i]
                 else:
-                    print("为什么会不一致？")
+                    print("实体和对应的索引不一致！")
         ser[i][0]=sent[i]
         ser[i][1].extend(es)
-    for r,e1,e2 in relations:
-        if e1 not in e_dict or e2 not in e_dict:
+    for r,e1i,e2i in relations:
+        if e1i not in e_dict or e2i not in e_dict:
             print("实体丢失引起关系出错！")
             continue
-        i1,i2 = e_dict[e1],e_dict[e2]
-        if i1==i2:
-            t1,s1,e1,es1 = entities[e1][0],entities[e1][1]-sent_range[i1][0],entities[e1][2]-sent_range[i1][0],entities[e1][3]
-            t2,s2,e2,es2 = entities[e2][0],entities[e2][1]-sent_range[i1][0],entities[e2][2]-sent_range[i1][0],entities[e2][3]
-            ser[i1][2].append((r,(t1,s1,e1,es1),(t2,s2,e2,es2)))
+        i1s,i2s = e_dict[e1i],e_dict[e2i]
+        intersec = set.intersection(set(i1s),set(i2s))
+        if intersec:
+            for i in intersec:
+                t1,s1,e1,es1 = entities[e1i][0],entities[e1i][1]-sent_range[i][0],entities[e1i][2]-sent_range[i][0],entities[e1i][3]
+                t2,s2,e2,es2 = entities[e2i][0],entities[e2i][1]-sent_range[i][0],entities[e2i][2]-sent_range[i][0],entities[e2i][3]
+                ser[i][2].append((r,(t1,s1,e1,es1),(t2,s2,e2,es2)))
         else:
             print("关系的两个实体不在一个句子上")
     return ser
-
 
 def get_question(head_entity,relation_type=None,end_entity_type=None):
     """
@@ -300,14 +322,17 @@ def sent2qas(ser,allow_impossible=False):
         for rel in relas:
             rela_type,head_ent,end_ent = rel
             k = (head_ent,rela_type,end_ent[0])
-            q = dict2[k]
-            qat2[q].append(rel)
+            try:
+                q = dict2[k]
+                qat2[q].append(rel)
+            except:
+                print("似乎出现了未定义的关系：",rel)
     qas = [qat1,qat2]
     res["qa_pairs"]=qas
     return res
 
 
-def process(dataset_dir,allow_impossible=False):
+def process(dataset_dir,allow_impossible=False,window_size=100,overlap=50):
     all_path = [os.path.join(dataset_dir, t) for t in ['train', 'dev', 'test']]
     for p in all_path:
         #对文件进行处理
@@ -325,13 +350,15 @@ def process(dataset_dir,allow_impossible=False):
                 txt = [t for t in raw_txt.split('\n') if t.strip()]
             #去掉前三行无用的信息
             ntxt = "\n".join(txt[3:])
+            #去掉多余的空白符
+            ntxt = " ".join(ntxt.split())
             #得到偏移量
             offset = raw_txt.index(txt[3])# 得到第一个句子的偏移
             #解析得到实体和关系
             #entities, relations = parse_ann(ann,offset)
             entities,relations = aligment_ann(raw_txt[offset:],ntxt,ann_path,offset)
             #得到每个句子里面的实体以及关系
-            sent_er = get_sent_er(ntxt,entities,relations)
+            sent_er = get_sent_er(ntxt,entities,relations,window_size,overlap)
             #开始构造数据集
             for ser in sent_er:
                 data.append(sent2qas(ser,allow_impossible))
@@ -341,4 +368,4 @@ def process(dataset_dir,allow_impossible=False):
 
 if __name__=="__main__":
     #process(args.dataset_dir)
-    process(args.dataset_dir,allow_impossible=False)
+    process(args.dataset_dir,allow_impossible=True)
