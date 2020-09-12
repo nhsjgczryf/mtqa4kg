@@ -7,13 +7,13 @@ import json
 import nltk
 
 parser = argparse.ArgumentParser()
-parser.add_argument("--dataset_tag",default='ace2005', choices=['ace2004', 'ace2005'],  type=str)
-parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\hkcs\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
-parser.add_argument("--query_template_path",default=r"C:\Users\hkcs\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
+parser.add_argument("--dataset_tag",default='ace2005', choices=['ACE2004', 'ACE2005'],  type=str)
+parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\Dell\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
+parser.add_argument("--query_template_path",default=r"C:\Users\Dell\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
 parser.add_argument("--allow_impossible",action="store_true")
 parser.add_argument("--window_size",type=int,default=100)
 parser.add_argument("--overlap",type=int,default=50)
-parser.add_argument("--output_dir", default=r"C:\Users\hkcs\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
+parser.add_argument("--output_dir", default=r"C:\Users\Dell\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
 args = parser.parse_args()
 
 
@@ -309,7 +309,13 @@ def sent2qas(ser,allow_impossible=False):
         for en in ents:
             q = dict1[en[0]]
             qat1[q].append(en)
-        #构造第二轮问答
+        #构造第二轮问答(暂时不考虑第二轮问答的负样本的问题)
+        qat2 = {}
+        for rel in relas:
+            rel_type,head_ent,end_ent = rel
+            question = get_question(head_ent,rel_type,end_ent[0])
+            qat2[question] = qat2.get(question,[])+[rel]
+        '''
         dict2 = {}
         for ent in ents:
             for rel_type in relations:
@@ -327,6 +333,7 @@ def sent2qas(ser,allow_impossible=False):
                 qat2[q].append(rel)
             except:
                 print("似乎出现了未定义的关系：",rel)
+        '''
     qas = [qat1,qat2]
     res["qa_pairs"]=qas
     return res
@@ -366,6 +373,17 @@ def process(dataset_dir,allow_impossible=False,window_size=100,overlap=50):
         with open(save_path,'w',encoding='utf-8') as f:
             json.dump(data,f)
 
+def get_mini_data(path,samples=100):
+    with open(path) as f:
+        data = json.load(f)
+    minidata = data[:samples]
+    d,f = os.path.split(path)
+    f = "{}_mini_{}".format(samples,f)
+    p = os.path.join(d,f)
+    with open(p,'w') as f:
+        json.dump(minidata,f)
+
 if __name__=="__main__":
     #process(args.dataset_dir)
-    process(args.dataset_dir,allow_impossible=True)
+    #process(args.dataset_dir,allow_impossible=True)
+    get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 3)

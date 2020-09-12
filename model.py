@@ -1,40 +1,7 @@
 import torch
 import torch.nn as nn
-import logging
 from transformers import BertModel
-logging.basicConfig(level=logging.DEBUG,format='%(asctime)s  %(message)s')
 
-class MyModel(nn.Module):
-    """
-    这个模型时一轮问答
-    """
-    def __init__(self, config):
-        self.config = config
-        self.bert = BertModel.from_pretrained(config.pretrained_model_name_or_path)
-        self.tag_linear = nn.Linear(config.hidden_size, 4)#BMEO标注，4种标签
-        self.dropout = nn.Dropout(config.dropout_prob)
-
-    def forward(self, input_ids, attention_mask, token_type_ids, target_tag,turn_mask):
-        """
-        Desc:
-            一轮问答
-        Args:
-            input_ids: (batch_size,turn_num,seq_len)
-            target_tag: (batch_size,turn_num,seq_len)
-            turn_mask: BoolTensor (batch_size,turn_num) turn_num[i][j]代表第i个样本里面的第j轮对话是否存在
-        Return:
-            context中每个token的tag概率分布
-        """
-        rep,_cls = self.bert(input_ids,attention_mask,token_type_ids)
-        if not target_mask is None:
-            context_rep = rep[target_mask] #(N, hidden_size)，N是batch中context token的数量
-            context_target_tags = target_tag[target_mask] #(N, hidden_size)
-            context_rep_logit = self.tag_linear(self.dropout(context_rep)) #(N)
-            loss = nn.functional.cross_entropy(context_target_tags,context_rep_logit)
-            return loss
-        else:
-            rep = self.tag_linear(self.dropout(rep)) #(batch,seq_len,5)
-        return rep
 
 class MyModel(nn.Module):
     def __init__(self,config):
@@ -51,7 +18,7 @@ class MyModel(nn.Module):
             input: （batch,seq_len），batch里面可能有第一轮的问答，也可能有第二轮的问答
             attention_mask:(batch,seq_len)
             token_type_ids:(batch,seq_len)
-            context_mask:(batch,seq_len)，context用来确认拥有标注的token，注意为了处理无答案的情况[CLS]也属于context
+            context_mask: (batch,seq_len)，context用来确认拥有标注的token，注意为了处理无答案的情况[CLS]也属于context
             target_tags:(batch,seq_len)
             turn_mask:(batch,) turn_mask[i]=0代表第一轮，turn_mask[i]=1代表第2轮
         """
