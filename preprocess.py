@@ -386,4 +386,4 @@ def get_mini_data(path,samples=100):
 if __name__=="__main__":
     #process(args.dataset_dir)
     #process(args.dataset_dir,allow_impossible=True)
-    get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 3)
+    get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 1)

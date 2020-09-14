@@ -21,10 +21,10 @@ def collate_fn(batch):
     context_mask = nbatch['context_mask']
     token_type_ids = nbatch['token_type_ids']
     #下面进行padding操作
-    ntxt_ids = pad_sequence(txt_ids,batch_first=True,padding_value=-1)
+    ntxt_ids = pad_sequence(txt_ids,batch_first=True,padding_value=0)#padding的值要在词汇表里面
     ntags = pad_sequence(tags,batch_first=True,padding_value=-1)
     ncontext_mask = pad_sequence(context_mask,batch_first=True,padding_value=-1)
-    ntoken_type_ids = pad_sequence(token_type_ids,batch_first=True,padding_value=-1)
+    ntoken_type_ids = pad_sequence(token_type_ids,batch_first=True,padding_value=1)
     attention_mask = torch.zeros(ntxt_ids.shape)
     for i in range(len(ntxt_ids)):
         txt_len = len(txt_ids[i])
@@ -170,5 +170,5 @@ def load_data(file_path,batch_size,max_len,pretrained_model_path,dist=False,shuf
     return dataloader
 
 if __name__=="__main__":
-    dataloader = load_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\3_mini_train.json',3,300,True,r'C:\Users\DELL\Desktop\chinese-bert-wwm-ext')
+    dataloader = load_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\2_mini_train.json',2,200,r'C:\Users\DELL\Desktop\chinese-bert-wwm-ext')
     dataloader1 = list(dataloader)

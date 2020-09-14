@@ -60,9 +60,9 @@ def tag_decode(tags,context_mask=None):
     对span的索引取两侧闭区间
     """
     seq_len = tags.shape[1]
-    spans = [[]*tags.shape[0]]
+    spans = [[]]*tags.shape[0]
     tags = tags.tolist()
-    if context_mask:
+    if not context_mask is None:
         context_mask = context_mask.tolist()
     #确定有答案的样本，以及对应的起点
     has_answer = []
