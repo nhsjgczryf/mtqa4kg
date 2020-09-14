@@ -5,8 +5,9 @@ from transformers import BertModel
 
 class MyModel(nn.Module):
     def __init__(self,config):
+        super(MyModel,self).__init__()
         self.config=config
-        self.bert = BertModel.from_pretrained(config.pretrained_model_name_or_path)
+        self.bert = BertModel.from_pretrained(config.pretrained_model_path)
         self.tag_linear = nn.Linear(self.bert.config.hidden_size,4)
         self.dropout = nn.Dropout(config.dropout_prob)
         self.loss_func = nn.CrossEntropyLoss()

@@ -7,7 +7,7 @@ import os
 import torch
 from torch.nn.utils import clip_grad_norm
 from model import MyModel
-from evaluation import evaluation
+from evaluation import dev_evaluation
 import pickle
 from transformers.optimization import get_linear_schedule_with_warmup
 from torch.utils.tensorboard import SummaryWriter
@@ -21,18 +21,19 @@ def set_seed(seed):
 
 def args_parser():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dataset_tag",required=True,default='ACE2005',choices=['ACE2005','ACE2004'])
-    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径")
+    parser.add_argument("--dataset_tag",default='ACE2005',choices=['ACE2005','ACE2004'])
+    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\3_mini_train.json")
     parser.add_argument("--train_batch",default=4)
-    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径")
+    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\3_mini_train.json")
     parser.add_argument("--dev_batch",default=6)
-    parser.add_argument("--pretrained_model_path")
+    parser.add_argument("--max_len",default=300,help="输入的最大长度")
+    parser.add_argument("--pretrained_model_path",default=r'C:\Users\DELL\Desktop\chinese-bert-wwm-ext')
     parser.add_argument("--max_epochs",default=10)
     parser.add_argument("--warmup_ratio",type=float,default=0.1)
     parser.add_argument("--lr",type=float,default=2e-5)
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
-    parser.add_argument("--theta",type=float,help="调节两个任务的权重")
+    parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
     parser.add_argument("--debug",action="store_true")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_gad_norm",type=float,default=1)
@@ -72,11 +73,11 @@ def train(args,train_dataloader,dev_dataloader=None):
         if args.tensorboard:
             log_dir = "./logs/{}/{}".format(args.dataset_tag,mid)
             writer = SummaryWriter(log_dir)
-    for epoch in args.max_epochs:
+    for epoch in range(args.max_epochs):
         if args.local_rank<1:
             print("#############epoch:",epoch,"#############")
             time.sleep(0.2)
-        tqdm_train_dataloader = tqdm(train_dataloader,desc="batch",ncols=200)
+        tqdm_train_dataloader = tqdm(train_dataloader,desc="batch",ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
             optimizer.zero_grad()
@@ -121,7 +122,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             torch.save(checkpoint,save_path)
             print("model saved at:",save_path)
         if args.eval and args.local_rank in [-1,0]:
-            p,r,f = evaluation(model,dev_dataloader)
+            p,r,f = dev_evaluation(model,dev_dataloader)
             print("precision:{:.2f} recall:{:.2f} f1:{:.2f}".format(p, r, f))
             if args.tensorboard:
                 writer.add_scalars("score", {"precision": p, "recall": r, 'f1': f}, epoch)
@@ -135,15 +136,13 @@ def train(args,train_dataloader,dev_dataloader=None):
 if __name__=="__main__":
     args = args_parser()
     set_seed(args.seed)
-    args.train_path = None
-    args.dev_path = None
     if args.local_rank!=-1:
         torch.distributed.init_process_group(backend='nccl')
     if args.train_path.endswith(".json"):
         train_dataloader = load_data(args.train_path,args.train_batch,args.max_len,args.pretrained_model_path,args.local_rank!=-1,shuffle=True)
         p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[-1],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
         p1 = os.path.join(os.path.split(args.train_path)[0],p)
-        pickle.dump(open(p1,'wb'))
+        pickle.dump(train_dataloader,open(p1,'wb'))
     else:
         train_dataloader = pickle.load(open(args.train_path,'rb'))
         if isinstance(train_dataloader.sampler,torch.utils.data.DistributedSampler):
@@ -153,7 +152,7 @@ if __name__=="__main__":
             dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path)
             p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[-1],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
-            pickle.dump(p1)
+            pickle.dump(dev_dataloader,open(p1,'wb'))
         else:
             dev_dataloader = pickle.load(open(args.dev_path,"rb"))
     else:
