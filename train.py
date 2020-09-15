@@ -139,7 +139,7 @@ if __name__=="__main__":
     if args.local_rank!=-1:
         torch.distributed.init_process_group(backend='nccl')
     if args.train_path.endswith(".json"):
-        p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[-1],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
+        p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
         p1 = os.path.join(os.path.split(args.train_path)[0],p)
         if not os.path.exists(p1):
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
@@ -155,7 +155,7 @@ if __name__=="__main__":
             train_dataloader.sampler.rank=args.local_rank
     if args.eval:
         if args.dev_path.endswith('.json'):
-            p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[-1],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
+            p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1):
                 dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path)
