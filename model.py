@@ -17,11 +17,11 @@ class MyModel(nn.Module):
         """
         Args:
             input: （batch,seq_len），batch里面可能有第一轮的问答，也可能有第二轮的问答
-            attention_mask:(batch,seq_len)
-            token_type_ids:(batch,seq_len)
+            attention_mask: (batch,seq_len)
+            token_type_ids: (batch,seq_len)
             context_mask: (batch,seq_len)，context用来确认拥有标注的token，注意为了处理无答案的情况[CLS]也属于context
-            target_tags:(batch,seq_len)
-            turn_mask:(batch,) turn_mask[i]=0代表第一轮，turn_mask[i]=1代表第2轮
+            target_tags: (batch,seq_len)
+            turn_mask: (batch,) turn_mask[i]=0代表第一轮，turn_mask[i]=1代表第2轮
         """
         rep,cls_rep = self.bert(input,attention_mask,token_type_ids)
         rep = self.dropout(rep)

@@ -67,20 +67,22 @@ def tag_decode(tags,context_mask=None):
     #确定有答案的样本，以及对应的起点
     has_answer = []
     start_idxs = []
+    end_idxs = []
     for i,t in enumerate(tags):
         if t[0]!=tag_idxs['S']:
             has_answer.append(i)
-            for j, tj in enumerate(t[1:],1):
-                if tj != -1 and (context_mask is None):
-                    start_idxs.append(j)
-                    break
-                if (not context_mask is None) and context_mask[j]!=0:
-                    start_idxs.append(j)
-                    break
-    for i,s in zip(has_answer,start_idxs):
+            if context_mask is None:
+              mask = [1 if i!=-1 else 0 for i in t]
+            else:
+              mask = context_mask[i]
+            s = mask.index(1,1)
+            e = mask.index(0,s)
+            start_idxs.append(s)
+            end_idxs.append(e)
+    for i,s,e in zip(has_answer,start_idxs,end_idxs):
         span = []
         j=s
-        while j<seq_len:
+        while j<e:
             if tags[i][j]==tag_idxs['S']:
                 span.append([j,j])
                 j+=1
