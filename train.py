@@ -73,10 +73,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             log_dir = "./logs/{}/{}".format(args.dataset_tag,mid)
             writer = SummaryWriter(log_dir)
     for epoch in range(args.max_epochs):
-        if args.local_rank<1:
-            print("#############epoch:",epoch,"#############")
-            time.sleep(0.2)
-        tqdm_train_dataloader = tqdm(train_dataloader,desc="batch",ncols=150)
+        tqdm_train_dataloader = tqdm(train_dataloader,desc="epoch:%d"%epoch,ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
             optimizer.zero_grad()
@@ -87,13 +84,16 @@ def train(args,train_dataloader,dev_dataloader=None):
             loss,(loss_t1,loss_t2) = model(txt_ids, attention_mask, token_type_ids, context_mask, turn_mask,tags)
             loss.backward()
             lr = optimizer.param_groups[0]['lr']
-            parameters = list(filter(lambda p: p.grad is not None, model.parameters()))
-            grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for p in parameters])).item()
+            named_parameters = [(n,p) for n,p in model.named_parameters() if not p.grad is None]
+            grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for n,p in named_parameters])).item()
             if args.max_gad_norm>0:
                 clip_grad_norm_(model.parameters(),args.max_gad_norm)
-                if args.tensorboard:
-                    for pi,p in enumerate(parameters):
-                        writer.add_histogram('gradient',p.grad,pi)
+            if args.tensorboard:
+                for pi,(n,p) in enumerate(named_parameters):
+                    writer.add_histogram('gradient_dist_%s'%n,p.grad)
+                    writer.add_histogram("param_dist_%s"%n,p)
+                    writer.add_scalar("gradient_norm_%s"%n,p,torch.norm(p.grad))
+                writer.add_scalars("gradient_norm_l",{n:p for n,p in named_parameters})
             optimizer.step()
             if args.warmup_ratio>0:
                 scheduler.step()

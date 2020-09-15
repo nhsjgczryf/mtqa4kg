@@ -23,7 +23,7 @@ def collate_fn(batch):
     #下面进行padding操作
     ntxt_ids = pad_sequence(txt_ids,batch_first=True,padding_value=0)#padding的值要在词汇表里面
     ntags = pad_sequence(tags,batch_first=True,padding_value=-1)
-    ncontext_mask = pad_sequence(context_mask,batch_first=True,padding_value=-1)
+    ncontext_mask = pad_sequence(context_mask,batch_first=True,padding_value=0)#这个和之前对query的padding一致
     ntoken_type_ids = pad_sequence(token_type_ids,batch_first=True,padding_value=1)
     attention_mask = torch.zeros(ntxt_ids.shape)
     for i in range(len(ntxt_ids)):
