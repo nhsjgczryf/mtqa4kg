@@ -23,13 +23,13 @@ def args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_tag",default='ACE2005',choices=['ACE2005','ACE2004'])
     parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\1_mini_train.json")
-    parser.add_argument("--train_batch",default=10)
+    parser.add_argument("--train_batch",type=int,default=10)
     parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\1_mini_train.json")
-    parser.add_argument("--dev_batch",default=10)
-    parser.add_argument("--max_len",default=300,help="输入的最大长度")
+    parser.add_argument("--dev_batch",type=int,default=10)
+    parser.add_argument("--max_len",default=300,type=int,help="输入的最大长度")#这个参数和我们数据处理的窗口大小有一定的关系
     parser.add_argument("--pretrained_model_path",default=r'C:\Users\DELL\Desktop\bert-base-uncased')
-    parser.add_argument("--max_epochs",default=100000000)
-    parser.add_argument("--warmup_ratio",type=float,default=0.1)
+    parser.add_argument("--max_epochs",default=100000000,type=int)
+    parser.add_argument("--warmup_ratio",type=float,default=-1)
     parser.add_argument("--lr",type=float,default=2e-5)
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
@@ -73,6 +73,8 @@ def train(args,train_dataloader,dev_dataloader=None):
             log_dir = "./logs/{}/{}".format(args.dataset_tag,mid)
             writer = SummaryWriter(log_dir)
     for epoch in range(args.max_epochs):
+        if args.local_rank!=-1:
+            train_dataloader.sampler.set_epoch(epoch)
         tqdm_train_dataloader = tqdm(train_dataloader,desc="epoch:%d"%epoch,ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
@@ -88,12 +90,19 @@ def train(args,train_dataloader,dev_dataloader=None):
             grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for n,p in named_parameters])).item()
             if args.max_gad_norm>0:
                 clip_grad_norm_(model.parameters(),args.max_gad_norm)
-            if args.tensorboard:
-                for pi,(n,p) in enumerate(named_parameters):
-                    writer.add_histogram('gradient_dist_%s'%n,p.grad)
-                    writer.add_histogram("param_dist_%s"%n,p)
-                    writer.add_scalar("gradient_norm_%s"%n,p,torch.norm(p.grad))
-                writer.add_scalars("gradient_norm_l",{n:p for n,p in named_parameters})
+            if args.tensorboard and  args.local_rank<1:
+                l=[]
+                for n,p in named_parameters:
+                    a1 = n
+                    a2 = p
+                    a3 = p.grad
+                    a4 = torch.norm(a3)
+                    l.append((a1,a2,a3,a4))
+                for a1,a2,a3,a4 in l:
+                    writer.add_histogram('gradient_dist_%s'%a1,a3)
+                    writer.add_histogram("param_dist_%s"%a1,a2)
+                    writer.add_scalar("gradient_norm_%s"%a1,a4)
+                writer.add_scalars("gradient_norm_l",{a1:a4 for a1,a2,a3,a4 in l})
             optimizer.step()
             if args.warmup_ratio>0:
                 scheduler.step()

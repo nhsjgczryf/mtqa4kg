@@ -1,19 +1,20 @@
 """
 对原始数据进行处理，将数据转化为
+fixme: 这个程序在linux上会出错，不知道是什么原因引起的，但是在windows上能正常处理数据
 """
 import os
 import argparse
 import json
-import nltk
+#import nltk
 
 parser = argparse.ArgumentParser()
 parser.add_argument("--dataset_tag",default='ace2005', choices=['ACE2004', 'ACE2005'],  type=str)
-parser.add_argument("--dataset_dir", type=str,default=r'C:\Users\Dell\Desktop\mtqa4kg\data\raw_data\ACE2005', help="数据集文件夹的路径")
-parser.add_argument("--query_template_path",default=r"C:\Users\Dell\Desktop\mtqa4kg\data\query_templates\ace2005.json", type=str, help="query模板")
+parser.add_argument("--dataset_dir", type=str,default='./data/raw_data/ACE2005', help="数据集文件夹的路径")
+parser.add_argument("--query_template_path",default="./data/query_templates/ace2005.json", type=str, help="query模板")
 parser.add_argument("--allow_impossible",action="store_true")
 parser.add_argument("--window_size",type=int,default=100)
 parser.add_argument("--overlap",type=int,default=50)
-parser.add_argument("--output_dir", default=r"C:\Users\Dell\Desktop\mtqa4kg\data\cleaned_data\ACE2005",type=str)
+parser.add_argument("--output_dir", default="./data/cleaned_data/ACE2005",type=str)
 args = parser.parse_args()
 
 
@@ -105,6 +106,7 @@ entities = ace2004_entities if args.dataset_tag == 'ace2004' else ace2005_entiti
 relations = ace2004_relations if args.dataset_tag == 'ace2004' else ace2005_relations
 relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2005_relation_triples
 
+#这个函数没用了
 def parse_ann(ann,offset=0):
     """对.ann文件解析"""
     ann_list = ann.split('\n')
@@ -125,6 +127,11 @@ def parse_ann(ann,offset=0):
     return entities,relations
 
 def aligment_ann(original, newtext, ann_file, offset):
+    """
+    Returns:
+        entities: 对应的实体标注，是四元组(entity_type, start_idx, end_idx,entity)的列表,不包含end_idx的内容
+        relations: 对应的关系标注,(relation_type,entity1_idx,entity2_idx)三元组的列表，其中entity_idx是对应的entity在entities列表中的
+    """
     annotation = []
     terms = {}
     ends = {}
@@ -339,6 +346,7 @@ def sent2qas(ser,allow_impossible=False):
     return res
 
 
+
 def process(dataset_dir,allow_impossible=False,window_size=100,overlap=50):
     all_path = [os.path.join(dataset_dir, t) for t in ['train', 'dev', 'test']]
     for p in all_path:
@@ -364,7 +372,9 @@ def process(dataset_dir,allow_impossible=False,window_size=100,overlap=50):
             #解析得到实体和关系
             #entities, relations = parse_ann(ann,offset)
             entities,relations = aligment_ann(raw_txt[offset:],ntxt,ann_path,offset)
-            #得到每个句子里面的实体以及关系
+            if 'test' in p:
+                data.append({"passage":ntxt,"entities":entities,"relations":relations})
+            #得到每个句子(block)里面的实体以及关系
             sent_er = get_sent_er(ntxt,entities,relations,window_size,overlap)
             #开始构造数据集
             for ser in sent_er:
@@ -372,6 +382,7 @@ def process(dataset_dir,allow_impossible=False,window_size=100,overlap=50):
         save_path = os.path.join(args.output_dir,os.path.split(p)[-1]+".json")
         with open(save_path,'w',encoding='utf-8') as f:
             json.dump(data,f)
+            
 
 def get_mini_data(path,samples=100):
     with open(path) as f:
@@ -385,5 +396,5 @@ def get_mini_data(path,samples=100):
 
 if __name__=="__main__":
     #process(args.dataset_dir)
-    #process(args.dataset_dir,allow_impossible=True)
-    get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 1)
+    process(args.dataset_dir,allow_impossible=True)
+    #get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 1)

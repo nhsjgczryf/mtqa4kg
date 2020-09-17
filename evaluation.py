@@ -1,5 +1,5 @@
 from tqdm import tqdm
-from dataloader import tag_idxs
+from dataloader import tag_idxs,load_t2_data
 import torch
 
 
@@ -49,11 +49,103 @@ def dev_evaluation(model,dataloader):
     precision,recall,f1 = get_score(gold2,predict2)
     return precision,recall,f1
 
-def test_evaluation():
-    pass
+def test_evaluation(model,t1_dataloader):
+    model.eval()
+    t1_predict = []
+    t2_predict = []
+    #第一轮问答
+    with torch.no_grad():
+        for i,batch in enumerate(tqdm(t1_dataloader,desc="t1")):
+            txt_ids,attention_mask,token_type_ids = batch['txt_ids'],batch['attention_mask'],batch['token_type_ids']
+            tag_idxs = model(txt_ids.to(device),attention_mask.to(device),token_type_ids.to(device))
+            predict_spans = tag_decode(tag_idxs,context_mask)
+            t1_predict.extend(predict_spans)
+    #进行第二轮问答
+    t2_dataloader = load_t2_data(t1_dataloader.dataset,t1_predict)
+    with torch.no_grad():
+        for i,batch in enumerate(tqdm(t2_dataloader,desc="t2")):
+            txt_ids,attention_mask,token_type_ids = batch['txt_ids'],batch['attention_mask'],batch['token_type_ids']
+            tag_idxs = model(txt_ids.to(device),attention_mask.to(device),token_type_ids.to(device))
+            predict_spans = tag_decode(tag_idxs,context_mask)
+            t2_predict.extend(predict_spans)
+    #获取一些需要需要的信息
+    t1_ids = t1_dataloader.dataset.t1_ids
+    t2_ids = t2_dataloader.dataset.t2_ids
+    window_size = t1_dataloader.dataset.window_size
+    overlap = t1_dataloader.dataset.overlap
+    t1_gold = t1_dataloader.dataset.t1_gold
+    t2_gold = t2_dataloader.dataset.t2_gold
+    #第一阶段的评估，即评估我们的ner的结果
+    p1,r1,f1 = eval_t1(t1_ids,t1_predict,t1_gold,window_size,overlap)
+    #第二阶段的评估，即评估我们的ner+re的综合结果
+    p2,r2,f2 = eval_t2(t2_ids, t2_predict,t2_gold,window_size,overlap)
+    return (p1,r1,f1),(p2,r2,f2)
 
-def predict():
-    pass
+
+#fixme: eval_t1和eval_t2要改一下,之前对一些函数的接口理解有问题
+#todo: 这里为了实现的简便，我们对overlap只考虑union，后续可以考虑求交集
+def eval_t1(t1_ids,t1_predict,t1_gold,window_size,overlap,overlap_opt="union"):
+    """
+    Args:
+        t1_ids (list)：t1_ids[i]为(passage_id,window_id,query_id/entity_type_id)
+        t1_predict: list of [(s1,e1), (s2,e2), ...]
+        t1_gold: list of (passage_id,entity_type_id,[(s1,e1),(s2,e2),...])
+        overlap_opt: 对overlap部分重复预测的处理方式，这里没有实现
+    """
+    #首先将预测结果中的在window context中的(s,e)换成passage中的(s,e)
+    t1_predict1 = []
+    for _id,pre in zip(t1_ids,t1_predict):
+        #这里我们对一个window的预测进行修正
+        window_id = _id[1]
+        offset = (window_size-overlap)*window_id
+        ents = []
+        for s,e in pre:
+            ns,ne = s-offset,e-offset
+            ents.append((ns,ne))
+        t1_predict1.append((_id[0],_id[1],_id[-1],ents))
+    #这里我们考虑按照passage_id进行聚类
+    t1_predict2 = []#其元素为(passage_id,[(window_id,entity_type_id,ents),...])其中ents是(s,e)的列表
+    t1_predict2i = []
+    cur_passage_id = t1_predict1[0][0]
+    for i in range(len(t1_predict1)):
+        if t1_predict1[i][0]==cur_passage_id:
+            t1_predict2i.append(t1_predict1[i][:1])
+        if i+1==len(t1_predict1) or t1_predict1[i+1][0]!=cur_passage_id:
+            t1_predict2.append((cur_passage_id,t1_predict2i))
+            cur_passage_id = t1_predict1[i+1][0]
+            t1_predict2i = []
+    t1_predict3 = []
+    for i in range(len(t1_predict2)):
+        passage_id,window_pre = t1_predict2[i]
+        #这里考虑对窗口overlap的部分取并集，后续可以实验取交集的效果
+        entities = {}
+        #去掉window_id这个东东。。
+        for window_id,ent_type_id,ents in window_pre:
+            entities[ent_type_id] = entities.get(ent_type_id,[])+ents
+        entities1 = []
+        for k,v in entities.items():
+            entities1.append((passage_id,k,list(set(v)))
+        t1_predict3.extend(entities1)
+    return get_score(set(t1_gold),set(t1_predict3))
+
+
+def eval_t2(t2_ids, t2_predict,t2_gold,window_size,overlap,overlap_opt="union"):
+    """
+    Args:
+        t2_gold: (passage_id,[(relation_type_id,(s1,e1),(s2,e2)),(relation_type_id`,(s1`,e1`),(s2`,e2)`)])
+        t2_predict: [(s1,e1),(s1',s2'),...]
+        t2_ids: (passage_id,windos_id,(s1,e1),relation_type_id)，这里的s1,e1是window中的offset
+    """
+    #这里我们同样有一个fix offset的操作
+    #t2_predict1 = []
+    #for _id, pre in zip(t2_ids,t2_predict):
+    #    window_id = _id[1]
+    #    offset = (window_size-overlap)*window_id
+    #    ns1,ne1 = _id[2][0]-offset,_id[2][0]-offset
+    #    ns2,ne2 = pre[0]-offset,pre[1]-offset
+    #    t2_predict1.append((_id[0],(ns1,ne1),_id[-1],(ns2,ne2)))
+    #return get_score(set(t2_gold),set(t2_predict1))
+
 
 def tag_decode(tags,context_mask=None):
     """
