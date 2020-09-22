@@ -40,7 +40,7 @@ def args_parser():
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
-    parser.add_argument("--max_gad_norm",type=float,default=1)
+    parser.add_argument("--max_grad_norm",type=float,default=1)
     parser.add_argument("--seed",type=int,default=209)
     parser.add_argument("--not_save",action="store_true",help="是否保存模型")
     parser.add_argument("--reload",action="store_true",help="是否重新构造缓存的数据")
@@ -105,7 +105,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             lr = optimizer.param_groups[0]['lr']
             named_parameters = [(n,p) for n,p in model.named_parameters() if not p.grad is None]
             grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for n,p in named_parameters])).item()
-            if args.max_gad_norm>0:
+            if args.max_grad_norm>0:
                 clip_grad_norm_(model.parameters(),args.max_gad_norm)
             if args.tensorboard and  args.local_rank<1:
                 l=[]
