@@ -7,15 +7,6 @@ import argparse
 import json
 #import nltk
 
-parser = argparse.ArgumentParser()
-parser.add_argument("--dataset_tag",default='ace2005', choices=['ACE2004', 'ACE2005'],  type=str)
-parser.add_argument("--dataset_dir", type=str,default='./data/raw_data/ACE2005', help="数据集文件夹的路径")
-parser.add_argument("--query_template_path",default="./data/query_templates/ace2005.json", type=str, help="query模板")
-parser.add_argument("--allow_impossible",action="store_true")
-parser.add_argument("--window_size",type=int,default=100)
-parser.add_argument("--overlap",type=int,default=50)
-parser.add_argument("--output_dir", default="./data/cleaned_data/ACE2005",type=str)
-args = parser.parse_args()
 
 
 ace2004_entities = ['FAC', 'GPE', 'LOC', 'ORG', 'PER', 'VEH', 'WEA']
@@ -28,8 +19,12 @@ ace2005_relations_full = ["artifact","gen affilliation",'organization affiliatio
 
 #这个后续可以优化，假设所有得组合都有可能
 ace2004_relation_triples = [(ent1,rela,ent2) for rela in ace2004_relations for ent1 in ace2004_entities for ent2 in ace2004_entities]
-#ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
+ace2005_relation_triples = [(ent1,rela,ent2) for rela in ace2005_relations for ent1 in ace2005_entities for ent2 in ace2005_entities]
 
+with open('/home/wangnan/mtqa4kg/data/query_templates/ace2005.json', encoding='utf-8') as f:
+    question_templates = json.load(f)
+
+"""
 ace2005_relation_st = {
     'PHYS':{
         'ARG1':[
@@ -90,6 +85,7 @@ ace2005_relation_st = {
         ]
     }
 }
+
 ace2005_relation_triples = []
 for rel,val in ace2005_relation_st.items():
     arg1 = val['ARG1']
@@ -99,12 +95,8 @@ for rel,val in ace2005_relation_st.items():
             for a2 in a2s:
                 if (a1,rel,a2) not in ace2005_relation_triples:
                     ace2005_relation_triples.append((a1,rel,a2))
+"""
 
-with open(args.query_template_path, encoding='utf-8') as f:
-    question_templates = json.load(f)
-entities = ace2004_entities if args.dataset_tag == 'ace2004' else ace2005_entities
-relations = ace2004_relations if args.dataset_tag == 'ace2004' else ace2005_relations
-relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2005_relation_triples
 
 #这个函数没用了
 def parse_ann(ann,offset=0):
@@ -395,6 +387,20 @@ def get_mini_data(path,samples=100):
         json.dump(minidata,f)
 
 if __name__=="__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset_tag",default='ace2005', choices=['ACE2004', 'ACE2005'],  type=str)
+    parser.add_argument("--dataset_dir", type=str,default='./data/raw_data/ACE2005', help="数据集文件夹的路径")
+    parser.add_argument("--query_template_path",default="./data/query_templates/ace2005.json", type=str, help="query模板")
+    parser.add_argument("--allow_impossible",action="store_true")
+    parser.add_argument("--window_size",type=int,default=100)
+    parser.add_argument("--overlap",type=int,default=50)
+    parser.add_argument("--output_dir", default="./data/cleaned_data/ACE2005",type=str)
+    args = parser.parse_args()
+    with open(args.query_template_path, encoding='utf-8') as f:
+        question_templates = json.load(f)
+    entities = ace2004_entities if args.dataset_tag == 'ace2004' else ace2005_entities
+    relations = ace2004_relations if args.dataset_tag == 'ace2004' else ace2005_relations
+    relation_triples = ace2004_relation_triples if args.dataset_tag == 'ace2004' else ace2005_relation_triples
     #process(args.dataset_dir)
     process(args.dataset_dir,allow_impossible=True)
     #get_mini_data(r'C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\train.json', 1)

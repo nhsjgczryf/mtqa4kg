@@ -1,17 +1,17 @@
+import os
 from tqdm import trange,tqdm
 import time
 import random
 import argparse
 import numpy as np
-import os
 import torch
 from torch.nn.utils import clip_grad_norm_
 from model import MyModel
-from evaluation import dev_evaluation
+from evaluation import dev_evaluation,test_evaluation
 import pickle
 from transformers.optimization import get_linear_schedule_with_warmup
 from torch.utils.tensorboard import SummaryWriter
-from dataloader import load_data
+from dataloader import load_data,load_t1_data
 
 def set_seed(seed):
     random.seed(seed)
@@ -22,13 +22,18 @@ def set_seed(seed):
 def args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_tag",default='ACE2005',choices=['ACE2005','ACE2004'])
-    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\1_mini_train.json")
+    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json")
     parser.add_argument("--train_batch",type=int,default=10)
-    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default=r"C:\Users\DELL\Desktop\mtqa4kg\data\cleaned_data\ACE2005\1_mini_train.json")
+    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json")
     parser.add_argument("--dev_batch",type=int,default=10)
+    parser.add_argument("--test_path",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_test.json")
+    parser.add_argument("--test_batch",type=int,default=10)
     parser.add_argument("--max_len",default=300,type=int,help="输入的最大长度")#这个参数和我们数据处理的窗口大小有一定的关系
-    parser.add_argument("--pretrained_model_path",default=r'C:\Users\DELL\Desktop\bert-base-uncased')
-    parser.add_argument("--max_epochs",default=100000000,type=int)
+    #window_size和overlap这两个参数在数据预处理阶段也有
+    parser.add_argument("--window_size",type=int,default=100)
+    parser.add_argument("--overlap",type=int,default=50)
+    parser.add_argument("--pretrained_model_path",default=r'/home/wangnan/pretrained_models/bert-base-uncased')
+    parser.add_argument("--max_epochs",default=10,type=int)
     parser.add_argument("--warmup_ratio",type=float,default=-1)
     parser.add_argument("--lr",type=float,default=2e-5)
     parser.add_argument("--dropout_prob",type=float,default=0.1)
@@ -37,12 +42,20 @@ def args_parser():
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_gad_norm",type=float,default=1)
     parser.add_argument("--seed",type=int,default=209)
-    parser.add_argument("--not_save",action="store_true",default=True,help="是否保存模型")
+    parser.add_argument("--not_save",action="store_true",help="是否保存模型")
     parser.add_argument("--reload",action="store_true",help="是否重新构造缓存的数据")
-    parser.add_argument("--eval",action="store_true",default=True,help="是否评估模型")
+    parser.add_argument("--eval",action="store_true",help="是否在验证集上评估模型(目前统一当作NER任务评估)")
+    parser.add_argument("--test_eval",action="store_true",help="在测试集上进行评估，包含第一轮NER和第二轮RE的评估")
     parser.add_argument("--tensorboard",action="store_true",help="是否开启tensorboard")
+    parser.add_argument("--debug",action="store_true")
+    #下面这个参数还没有支持
+    parser.add_argument("--strong_tensorboard_log_step",default=-1,type=float,help="是否开启强力记录（各层的参数分布，梯度分布，各层的梯度的二范数）")
     args = parser.parse_args()
     return args
+
+
+    
+    
 
 def reduce_tensor(tensor: torch.Tensor) -> torch.Tensor:
     rt = tensor.clone()
@@ -53,7 +66,11 @@ def reduce_tensor(tensor: torch.Tensor) -> torch.Tensor:
 def train(args,train_dataloader,dev_dataloader=None):
     model = MyModel(args)
     model.train()
-    device = torch.device('cuda:%d'%args.local_rank) if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
+    #device = torch.device('cuda:%d'%args.local_rank) if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
+    device = args.local_rank if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
+    assert torch.distributed.get_rank()==args.local_rank
+    if args.local_rank!=-1:
+        torch.cuda.set_device(args.local_rank)
     model.to(device)
     if args.local_rank!=-1:
         model = torch.nn.parallel.DistributedDataParallel(model,device_ids=[args.local_rank],output_device=args.local_rank,find_unused_parameters=True)
@@ -131,11 +148,16 @@ def train(args,train_dataloader,dev_dataloader=None):
             print("model saved at:",save_path)
         if args.eval and args.local_rank in [-1,0]:
             p,r,f = dev_evaluation(model,dev_dataloader)
-            print("precision:{:.2f} recall:{:.2f} f1:{:.2f}".format(p, r, f))
+            print("precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p, r, f))
             if args.tensorboard:
                 writer.add_scalars("score", {"precision": p, "recall": r, 'f1': f}, epoch)
                 writer.flush()
             model.train()
+        if args.test_eval and args.local_rank in [-1,0]:
+            test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader)
+            print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
+            print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
         if args.local_rank!=-1:
             torch.distributed.barrier()
     if args.local_rank!=-1 and args.tensorboard:
@@ -143,6 +165,14 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
+    if args.debug:
+        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json'
+        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json'
+        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_test.json'
+        args.eval=True
+        args.test_eval=True
+        args.reload=True
+        args.not_save=True
     set_seed(args.seed)
     print(args)
     if args.local_rank!=-1:
@@ -150,7 +180,7 @@ if __name__=="__main__":
     if args.train_path.endswith(".json"):
         p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
         p1 = os.path.join(os.path.split(args.train_path)[0],p)
-        if not os.path.exists(p1):
+        if not os.path.exists(p1) or args.reload:
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
                                          args.local_rank != -1, shuffle=True)
             pickle.dump(train_dataloader,open(p1,'wb'))
@@ -166,7 +196,7 @@ if __name__=="__main__":
         if args.dev_path.endswith('.json'):
             p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
-            if not os.path.exists(p1):
+            if not os.path.exists(p1) or args.reload:
                 dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
             else:
