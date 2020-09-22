@@ -41,9 +41,10 @@ class MyModel(nn.Module):
 
             tag_logits_t2 = tag_logits_t2[context_mask_t2==1]#(N2,num_tag)
             target_tags_t2 = target_tags_t2[context_mask_t2==1]#(N2)
-
-            loss_t1 = self.loss_func(tag_logits_t1,target_tags_t1)
-            loss_t2 = self.loss_func(tag_logits_t2,target_tags_t2)
+            
+            #batch里没有t1或t2时，不特殊处理的话t1或t2的loss会变为nan
+            loss_t1 = self.loss_func(tag_logits_t1,target_tags_t1) if len(target_tags_t1)!=0 else torch.tensor(0).type_as(input)
+            loss_t2 = self.loss_func(tag_logits_t2,target_tags_t2) if len(target_tags_t2)!=0 else torch.tensor(0).type_as(input)
             loss = self.theta*loss_t1+(1-self.theta)*loss_t2
             return loss,(loss_t1.item(),loss_t2.item())#后面一项主要用于训练的时候进行记录子任务的损失
         else:
