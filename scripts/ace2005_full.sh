@@ -1,0 +1,1 @@
+python -m torch.distributed.launch --nproc_per_node 3 train.py --train_path  ./data/cleaned_data/ACE2005/bert_base_uncased/train.json   --dev_path  ./data/cleaned_data/ACE2005/bert_base_uncased/dev.json --train_batch 4  --dev_batch 4 --max_len 300 --pretrained_model_path /home/wangnan/pretrained_models/bert-base-uncased --max_epochs 5  --

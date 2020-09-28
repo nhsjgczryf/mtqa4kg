@@ -172,7 +172,7 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
-    args.debug=True
+    args.debug=False
     if args.debug:
         args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
         #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'

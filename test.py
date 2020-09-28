@@ -11,9 +11,9 @@ os.environ['CUDA_VISIBLE)DEVICES']='3'
 
 os.environ['CUDA_VISIBLE)DEVICES']='3'
 
-test_path = "/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/test.json"
+test_path = "/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/test.json"
 test_batch=5
-model_dir = '/home/wangnan/mtqa4kg/checkpoints/ACE2005/2020_09_22_10_27_38/'
+model_dir = '/home/wangnan/mtqa4kg/checkpoints/ACE2005/2020_09_28_11_50_20/'
 file = "checkpoint_4.cpt"
 args = pickle.load(open(model_dir+'args',"rb"))
 checkpoint = torch.load(model_dir+file,map_location=torch.device("cpu"))
