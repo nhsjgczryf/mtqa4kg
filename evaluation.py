@@ -1,5 +1,5 @@
 from tqdm import tqdm
-from dataloader import tag_idxs,load_t2_data,wordpice_idx
+from dataloader import tag_idxs,load_t2_data
 import torch
 
 
@@ -30,11 +30,8 @@ def dev_evaluation(model,dataloader):
             tag_idxs = model(txt_ids.to(device), attention_mask.to(device), token_type_ids.to(device))
             predict_spans = tag_decode(tag_idxs,context_mask)
             gold_spans = tag_decode(tags)
-            turn1_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==0]
-            turn2_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==1]
-            #print("turn1 predict",len(turn1_predict),turn1_predict)
-            #print("turn2 predict",len(turn2_predict),turn2_predict)
-            #print("dev gold spans:",gold_spans)
+            #turn1_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==0]
+            #turn2_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==1]
             predict.append((i,predict_spans))
             gold.append((i,gold_spans))
     gold2 = set()
@@ -88,218 +85,43 @@ def test_evaluation(model,t1_dataloader):
     #获取一些需要需要的信息
     t1_ids = t1_dataloader.dataset.t1_ids
     t2_ids = t2_dataloader.dataset.t2_ids
-    window_offset1 = t1_dataloader.dataset.window_offset1
-    window_offset2 = t2_dataloader.dataset.window_offset2
-    tokenizer = t1_dataloader.dataset.tokenizer
-    passages = t1_dataloader.dataset.passages
-    passage_windows = t1_dataloader.dataset.passage_windows
+    window_offset_base = t1_dataloader.dataset.window_offset_base
     query_offset1 = t1_dataloader.dataset.query_offset1
     query_offset2 = t2_dataloader.dataset.query_offset2
     t1_gold = t1_dataloader.dataset.t1_gold
     t2_gold = t2_dataloader.dataset.t2_gold
     #第一阶段的评估，即评估我们的ner的结果
-    p1,r1,f1 = eval_t1(tokenizer,passages,passage_windows,t1_gold,t1_predict,t1_ids,window_offset1,query_offset1)
+    p1,r1,f1 = eval_t(t1_predict,t1_gold,t1_ids,query_offset1,window_offset_base,False)
     #第二阶段的评估，即评估我们的ner+re的综合结果
-    p2,r2,f2 = eval_t2(tokenizer,passages,passage_windows,t2_gold,t2_predict,t2_ids,window_offset2,query_offset2)
-    #p2,r2,f2 = eval_t2(t2_ids, query_offset2,t2_predict,t2_gold,window_size,overlap)
+    p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,True)
     return (p1,r1,f1),(p2,r2,f2)
 
-
-def eval_t1(tokenizer,passages,passage_windows,t1_gold,t1_predict,t1_ids,window_offset,query_offset):
-    """
-    把t1_predict转化为passage上的char level的标注，然后评估。（不用wordpiece level的标注是因为滑窗切分处的tokenzie有可能不一致）
-    Args:
-        passages(list): 文章。主要用来校验我们的offset操作有没有错误。
-        passage_windows(list[list]),文章对应的经过wordpiece之后的window
-        t1_gold (list): 元素为(passage_id,(entity_type,start_idx,end_idx,entity_str))，这里的start_idx和end_idx是在passage中char level的标注
-        t1_predict: [(start1,end1),(start2,end2),...]，这里的start和end是在query+window中wordpiece level的标注
-        t1_ids(list): 元素为(passage_id,window_id,entity_type)
-        window_offset(list): 元素为对应t1_predict window在passage中char level的偏移量
-        query_offset(dict): [CLS]+query+[SEP]对应的offset，这里是word piecce level的偏移量（和entity type有关）
-    """
-    t1_predict1 = []
-    for i,(_id, pre) in enumerate(zip(t1_ids,t1_predict)):
-        passage_id,window_id,entity_type = _id
-        window = tokenizer.tokenize(passage_windows[passage_id][window_id])
-        for start,end in pre:
-            start1,end1 = start-query_offset[entity_type], end-query_offset[entity_type]
-            wordpiece_str = tokenizer.convert_tokens_to_string(window[:start1])
-            start2 = wordpice_idx(passage_windows[passage_id][window_id],wordpiece_str)+1
-            ent_str = tokenizer.convert_tokens_to_string(window[start1:end1])
-            end2 = start2 + wordpice_idx(context[start2:],ent_str)
-            start3,end3 = start2+window_offset[i],end2+window_offset[i]
-            assert ent_str.lower().replace(" ","")==passages[passage_id][start3:end3].lower().replace(" ","")
-            t1_predict1.append((passage_id,(entity_type,start3,end3,passages[passage_id][start3:end3])))
-    #print("t1 gold:",t1_gold)
-    #print("t1 predict",t1_predict1)
-    return get_score(set(t1_gold),set(t1_predict1))
-
-
-def eval_t2(tokenizer,passages,passage_windows,t2_gold,t2_predict,t2_ids,window_offset,query_offset):
-    """
-    Args:
-        t2_gold: (passage_id,(head_entity,relation_type,end_entity))，其中entity是passage中char leval的四元组(entity_type,start_idx,end_idx,entity_str)
-        t2_predict: [(s1,e1),(s1',s2'),...]
-        t2_ids: (passage_id,window_id,head_entity,relation_type,end_entity_type)，这里的head entity的索引相对passage而非window的索引
-        query_offset(list):[CLS]+query+[SEP]对应的offset，这里是word piecce level的偏移量
-    """
-    t2_predict1 = []
-    for i,(_id, pre) in enumerate(zip(t2_ids,t2_predict)):
-        passage_id,window_id,head_entity,relation_type,end_entity_type = _id
-        window = tokenizer.tokenize(passage_windows[passage_id][window_id])
-        for start, end in pre:
-            start1,end1 = start-query_offset[i],end-query_offset[i]
-            wordpiece_str = tokenizer.convert_tokens_to_string(window[:start1])
-            start2 = wordpice_idx(passage_windows[passage_id][window_id],wordpiece_str)+1
-            ent_str = tokenizer.convert_tokens_to_string(window[start1:end1])
-            end2 = start2 + wordpice_idx(context[start2:],ent_str)
-            start3,end3 = start2+window_offset[i],end2+window_offset[i]
-            assert ent_str.lower().replace(" ","")==passages[passage_id][start3:end3].lower().replace(" ","")
-            t2_predict1.append((passage_id,(head_entity,relation_type,(end_entity_type,start3,end3,passages[passage_id][start3:end3]))))
-    #print("t2 gold:",t2_gold)
-    #print("t2 predict:",t2_predict1)
-    return get_score(set(t2_gold),set(t2_predict1))
-
-
-#fixme: eval_t1和eval_t2要改一下,之前对一些函数的接口理解有问题
 #todo: 这里为了实现的简便，我们对overlap只考虑union，后续可以考虑求交集
-#之前因为考虑overlap的问题，把问题搞复杂了，如果不考虑overlap（即直接union），代码很简单的。
-"""
-def eval_t1(t1_ids,t1_predict,t1_gold,window_size,overlap,overlap_opt="union"):
-    '''
+def eval_t(predict,gold,ids,query_offset,window_offset_base,turn2=False):
+    """
     Args:
-        t1_ids (list)：t1_ids[i]为(passage_id,window_id,entity_type)
-        t1_predict: list of [(s1,e1), (s2,e2), ...]
-        t1_gold: list of (passage_id,entity)
-        overlap_opt: 对overlap部分重复预测的处理方式，这里没有实现
-    '''
-    #首先将预测结果中的在window context中的(s,e)换成passage中的(s,e)
-    t1_predict1 = []
-    for _id,pre in zip(t1_ids,t1_predict):
-        #这里我们对一个window的预测进行修正
-        window_id = _id[1]
-        offset = (window_size-overlap)*window_id
-        ents = []
-        for s,e in pre:
-            ns,ne = s-offset,e-offset
-            ents.append((ns,ne))
-        t1_predict1.append((_id[0],_id[1],_id[-1],ents))
-    #这里我们考虑按照passage_id进行聚类
-    t1_predict2 = []#其元素为(passage_id,[(window_id,entity_type,ents),...])其中ents是(s,e)的列表
-    t1_predict2i = []
-    cur_passage_id = t1_predict1[0][0]
-    for i in range(len(t1_predict1)):
-        if t1_predict1[i][0]==cur_passage_id:
-            t1_predict2i.append(t1_predict1[i][1:])
-        if i+1==len(t1_predict1) or t1_predict1[i+1][0]!=cur_passage_id:
-            t1_predict2.append((cur_passage_id,t1_predict2i))
-            cur_passage_id = t1_predict1[i+1][0]
-            t1_predict2i = []
-    t1_predict3 = []#t1其元素为(passage_id,entity_type,[entitiy1,entity2,...])
-    for i in range(len(t1_predict2)):
-        passage_id,window_pre = t1_predict2[i]
-        #这里考虑对窗口overlap的部分取并集，后续可以实验取交集的效果
-        entities = {}
-        #去掉window_id这个东东。。
-        for window_id,ent_type,ents in window_pre:
-            entities[ent_type] = entities.get(ent_type,[])+ents
-        entities1 = []
-        for k,v in entities.items():
-            entities1.append((passage_id,k,list(set(v))))
-        t1_predict3.extend(entities1)
-    #将t1_predict3中的[entity1,entity2...]展开
-    t1_predict4 = []
-    for passage_id,ent_type,ents in t1_predict3:
-        for ent in ents:
-            t1_predict4.append((passage_id,(ent_type,)+ent))
-    return get_score(set(t1_gold),set(t1_predict4))
-
-
-def eval_t1(t1_ids,query_offset,t1_predict,t1_gold,window_size,overlap,overlap_opt="union"):
-    '''
-    Args:
-        t1_ids (list)：t1_ids[i]为(passage_id,window_id,entity_type)
-        query_offset: 字典，key=实体类型，value=对应的queryoffset
-        t1_predict: list of [(s1,e1), (s2,e2), ...]
-        t1_gold: list of (passage_id,entity)
-        overlap_opt: 对overlap部分重复预测的处理方式，这里没有实现
-    '''
-    print("t1_ids:",t1_ids)
-    print("query_offset:",query_offset)
-    print("t1_gold:",t1_gold)
-    print("t1_predict:",t1_predict)
-    t1_predict1 = []
-    for _id, pre in zip(t1_ids,t1_predict):
-        passage_id,window_id,ent_type = _id
-        offset1 = (window_size-overlap)*window_id#滑窗导致的offset
-        offset2 = query_offset[ent_type] #query导致的offset
-        for s,e in pre:
-            ns,ne = s+offset1-offset2,e+offset1-offset2
-            t1_predict1.append((passage_id,(ent_type,ns,ne)))
-    print("t1 final predict:",t1_predict1)
-    return get_score(set(t1_gold),set(t1_predict1))
-
-
-def eval_t2(t2_ids, t2_predict,t2_gold,window_size,overlap,overlap_opt="union"):
-    '''
-    Args:
-        t2_gold: (passage_id,(head_entity,relation_type,end_entity))
-        t2_predict: [(s1,e1),(s1',s2'),...]
-        t2_ids: (passage_id,window_id,head_entity,relation_type,end_entity_type)，这里的s1,e1是passage中的offset
-    '''                 
-    #修复passage与window的不一致的问题
-    t2_predict1 = []
-    for _id,pre in zip(t2_ids,t2_predict):
-        window_id = _id[1]
-        offset = (window_size-overlap)*window_id
-        ents = []
-        for s,e in pre:
-            ns,ne = s-offset,e-offset
-            ents.append((ns,ne))
-        t2_predict1.append(_id+ents)
-    #同样按照passage_id进行聚类
-    t2_predict2 = []
-    t2_predict2i = []
-    cur_passage_id = t2_predict[0][0]
-    for i in range(len(t2_predict1)):
-        if t2_predict1[i][0]==cur_passage_id:
-            t2_predict2i.append(t2_predict2[i][1:])
-        if i+1==len(t2_predict2) or t2_predict2[i+1][0]!=cur_passage_id:
-            t2_predict2.append((cur_passage_id,t2_predict2i))
-            cur_passage_id =  t2_predict2[i+1][0]
-            t2_predict2i = []
-    t2_predict3 = []#其元素为(passage_id,head_entity,relation_type,[end_entity1,end_entity2,...])
-    for i in range(len(t2_predict2)):
-        #这里我们去掉window id这个东西
-        passage_id, window_pre = t2_predict2[i]
-        relations = {}
-        for window_id,head_entity,relation_type,end_entity_type,ents in window_pre:
-            key = (head_entity,relation_type,end_entity_type)
-            relations[key]=ents
-        relations1 = []
-        for k,v in relations.items():
-            relations1.append((passage_id,k,list(set(v))))
-        t2_predict3.extend(entities1)
-    return get_score(set(t2_gold),set(t2_predict3))
-
-def eval_t2(t2_ids, query_offset,t2_predict,t2_gold,window_size,overlap,overlap_opt="union"):
-    '''
-    Args:
-        t2_gold: (passage_id,(head_entity,relation_type,end_entity))
-        query_offset: 列表，代表第i个样本的query的offset。注意这里和eval_t1中的不一样，因为query与实体内容相关了
-        t2_predict: [(s1,e1),(s1',s2'),...]
-        t2_ids: (passage_id,window_id,head_entity,relation_type,end_entity_type)，注意这里的s1,e1是passage中的offset,不是window中的id
-    '''              
-    t2_predict1 = []
-    for i,(_id, pre) in enumerate(zip(t2_ids,t2_predict)):
-        passage_id,window_id,head_entity,relation_type,end_entity_type = _id
-        offset1 = (window_size-overlap)*window_id
-        offset2 = query_offset[i]
-        for s,e in pre:
-            ns,ne = s-offset1-offset2,e-offset1-offset2
-            t2_predict1.append((passage_id,(head_entity,relation_type,(end_entity_type,ns,ne))))
-    return get_score(set(t2_gold),set(t2_predict1))            
-"""
+        predict: [(s1,e1),(s2,e2),(s3,e3),...]
+        gold: (passage_id,(entity_type,start_idx,end_idx,entity_str)) or (passage_id,(head_entity,relation_type,end_entity))
+        ids: (passage_id, window_id,entity_type) or (passage_id,window_id,head_entity,relation_type,end_entity_type)，其中head_entity中的实体索引是passage而非context中的
+        query_offset: [CLS]+title+[SEP]+query+[SEP]对应的offset
+        window_offset_base: window_size-overlap的值
+        turn2: 是否为第二轮评估，默认为第一轮的评估
+    """
+    predict1 = []
+    for i,(_id,pre) in enumerate(zip(ids,predict)):
+        if not turn2:
+            passage_id, window_id, entity_type = _id
+        else:
+            passage_id, window_id, head_entity, relation_type, end_entity_type = _id
+        window_offset = window_offset_base*window_id
+        for start,end in pre:
+            start1,end1 = start-query_offset[i]+window_offset,end-query_offset[i]+window_offset
+            if not turn2:
+                new = (passage_id,(entity_type,start1,end1))
+            else:
+                new = (passage_id,(head_entity,relation_type,(end_entity_type,start1,end1)))
+            predict1.append(new)
+    return get_score(set(gold),set(predict1))
 
 
 def tag_decode(tags,context_mask=None):
@@ -343,10 +165,10 @@ def tag_decode(tags,context_mask=None):
                         span.append([j,k+1])
                         j=k+1
                         break
-                if k==e-1 and tags[i][k]==tag_idxs['O']:
+                if k==e-1:#最后一个位置为O或者M跳出的情况
                     j=k+1
                     break
-                elif k<j+1:
+                elif k<j+1:#j==e-1的情况，
                     j+=1
                     break
             else:

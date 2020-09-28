@@ -28,6 +28,8 @@ def args_parser():
     parser.add_argument("--dev_batch",type=int,default=10)
     parser.add_argument("--test_path",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_test.json")
     parser.add_argument("--test_batch",type=int,default=10)
+    parser.add_argument("--turn2_down_sample_ratio",default=0.5,type=float,help="取值为0-1，代表每篇文章的")
+    parser.add_argument("--dynamic_sample",action="store_true",help="是否每个epoch重新采样")
     parser.add_argument("--max_len",default=300,type=int,help="输入的最大长度")#这个参数和我们数据处理的窗口大小有一定的关系
     #window_size和overlap这两个参数在数据预处理阶段也有
     parser.add_argument("--window_size",type=int,default=100)
@@ -68,7 +70,6 @@ def train(args,train_dataloader,dev_dataloader=None):
     model.train()
     #device = torch.device('cuda:%d'%args.local_rank) if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
     device = args.local_rank if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
-    assert torch.distributed.get_rank()==args.local_rank
     if args.local_rank!=-1:
         torch.cuda.set_device(args.local_rank)
     model.to(device)
@@ -92,6 +93,11 @@ def train(args,train_dataloader,dev_dataloader=None):
     for epoch in range(args.max_epochs):
         if args.local_rank!=-1:
             train_dataloader.sampler.set_epoch(epoch)
+        #debug的时候最好不要使用下面两行代码，因为这样可能导致需要较多的epoch才能收敛，每个epoch采样不同负样本的有效性也有待证明(fixme: 单GPU下面的代码也要执行)
+        #暂时不对dev进行采样，然后呢，下面的init_data如果效率较低可能会部分重写MyDataset
+        if args.dynamic_sample and  1>args.turn2_down_sample_ratio>0:
+            train_dataloader.dataset.set_epoch(epoch)
+            train_dataloader.dataset.init_data()
         tqdm_train_dataloader = tqdm(train_dataloader,desc="epoch:%d"%epoch,ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
@@ -106,8 +112,9 @@ def train(args,train_dataloader,dev_dataloader=None):
             named_parameters = [(n,p) for n,p in model.named_parameters() if not p.grad is None]
             grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for n,p in named_parameters])).item()
             if args.max_grad_norm>0:
-                clip_grad_norm_(model.parameters(),args.max_gad_norm)
+                clip_grad_norm_(model.parameters(),args.max_grad_norm)
             if args.tensorboard and  args.local_rank<1:
+                #下面的代码需要改
                 l=[]
                 for n,p in named_parameters:
                     a1 = n
@@ -165,24 +172,33 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
+    args.debug=True
     if args.debug:
-        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json'
-        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json'
-        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_test.json'
-        args.eval=True
+        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
+        #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
+        #args.eval=True
         args.test_eval=True
         args.reload=True
         args.not_save=True
+        args.turn2_down_sample_ratio=0.1#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
+        args.dynamic_sample = True
+        args.max_epochs=2000
     set_seed(args.seed)
     print(args)
+    #turn2_down_sample_ratio这个参数还没很好的支持，目前是对MyDataset每个epoch不重新采样，并且，采样的标准是一个block第二轮问答的样本的数量固定。 
     if args.local_rank!=-1:
         torch.distributed.init_process_group(backend='nccl')
     if args.train_path.endswith(".json"):
         p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
         p1 = os.path.join(os.path.split(args.train_path)[0],p)
         if not os.path.exists(p1) or args.reload:
+            #debug的时候，关闭shuffle，训练的时候记得开启
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
-                                         args.local_rank != -1, shuffle=True)
+                                         args.local_rank != -1, shuffle=False,down_sample_ratio=args.turn2_down_sample_ratio)
             pickle.dump(train_dataloader,open(p1,'wb'))
         else:
             train_dataloader = pickle.load(open(p1, 'rb'))
@@ -197,7 +213,7 @@ if __name__=="__main__":
             p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1) or args.reload:
-                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path)
+                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,down_sample_ratio=0.5)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
             else:
                 dev_dataloader = pickle.load(open(p1, "rb"))
