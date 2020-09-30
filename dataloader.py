@@ -4,7 +4,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import BertTokenizer
 from preprocess import passage_blocks, get_question
-from contants import *
+from constants import *
 
 
 def collate_fn(batch):
@@ -160,10 +160,7 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch):
         negative_t2 = list(negative_t2.items())
         neg_prob = [neg_prob[q] for q,ans in negative_t2]
         neg_weight = np.array(neg_prob)/sum(neg_prob)
-        try:
-            indexs =  np.random.choice(len(negative_t2),n_negative,False,neg_weight)
-        except:
-            print(neg_weight)
+        indexs =  np.random.choice(len(negative_t2),n_negative,False,neg_weight)
         negative_t2 = [negative_t2[i] for i in indexs]
         negative_t2 = dict(negative_t2)
     possitive_t2.update(negative_t2)

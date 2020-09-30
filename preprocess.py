@@ -5,7 +5,7 @@ import os
 import json
 import re
 from tqdm import tqdm
-from contants import *
+from constants import *
 
 def parse_ann(ann,offset=0):
     """对.ann文件解析"""
@@ -247,6 +247,8 @@ def process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_ta
             txt_files.append(os.path.join(data_dir,f))
         elif f.endswith('.ann'):
             ann_files.append(os.path.join(data_dir,f))
+    ann_files = sorted(ann_files)
+    txt_files = sorted(txt_files)
     for ann_path,txt_path in tqdm(zip(ann_files,txt_files),total=len(ann_files)):
         with open(txt_path,encoding='utf-8') as f:
             raw_txt = f.read()
@@ -269,6 +271,8 @@ def process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_ta
             block_er = get_block_er(ntxt1,entities,relations,window_size,overlap)
             for ber in block_er:
                 data.append(block2qas(ber,dataset_tag,question_templates,title))
+    if not os.path.exists(output_dir):
+        os.mkdir(output_dir)
     save_path = os.path.join(output_dir,os.path.split(data_dir)[-1]+".json")
     with open(save_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
@@ -327,14 +331,17 @@ def get_one_synthetic_data(tokenizer,output_dir,question_templates):
     json.dump(test_data,open(os.path.join(output_dir,'one_fake_test.json'),'w'))
 
 if __name__=="__main__":
-    #data_dir = "./data/raw_data/ACE2005/test"
-    txt_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.txt'
-    ann_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.ann'
-    output_dir = "./data/cleaned_data/ACE2005/bert_base_uncased"
+    data_dir = "./data/raw_data/ACE2005/test"
+    #txt_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.txt'
+    #ann_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.ann'
+    window_size = 300
+    overlap = 15
+    is_test = True
     from transformers import BertTokenizer
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
+    output_dir = "./data/cleaned_data/ACE2005/{}_overlap_{}_window_{}".format(os.path.split(pretrained_model_path)[-1],overlap,window_size)
     question_templates = ace2005_question_templates
-    #process(data_dir, output_dir, tokenizer, True, 150, 50, 'ace2005',question_templates)
+    process(data_dir, output_dir, tokenizer, is_test, window_size, overlap, 'ace2005',question_templates)
     #get_mini_data("./data/cleaned_data/ACE2005/bert_base_uncased/train.json",1)
     #get_one_passage_data(txt_path,ann_path,output_dir,tokenizer,150,50,'ace2005',question_templates)
-    get_one_synthetic_data(tokenizer,output_dir,question_templates)
+    #get_one_synthetic_data(tokenizer,output_dir,question_templates)

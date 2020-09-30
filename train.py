@@ -1,16 +1,20 @@
 import os
-from tqdm import trange,tqdm
 import time
 import random
 import argparse
-import numpy as np
-import torch
-from torch.nn.utils import clip_grad_norm_
-from model import MyModel
-from evaluation import dev_evaluation,test_evaluation
+
 import pickle
 from transformers.optimization import get_linear_schedule_with_warmup
 from torch.utils.tensorboard import SummaryWriter
+from torch.cuda.amp import autocast,GradScaler
+from tqdm import trange,tqdm
+import numpy as np
+import torch
+from torch.nn.utils import clip_grad_norm_
+
+from model import MyModel
+from evaluation import dev_evaluation,test_evaluation
+
 from dataloader import load_data,load_t1_data
 
 def set_seed(seed):
@@ -31,7 +35,7 @@ def args_parser():
     parser.add_argument("--turn2_down_sample_ratio",default=0.5,type=float,help="取值为0-1，代表每篇文章的")
     parser.add_argument("--dynamic_sample",action="store_true",help="是否每个epoch重新采样")
     parser.add_argument("--max_len",default=300,type=int,help="输入的最大长度")#这个参数和我们数据处理的窗口大小有一定的关系
-    #window_size和overlap这两个参数在数据预处理阶段也有
+    #window_size和overlap这两个参数在数据预处理阶段也有，但这里是预测时候的取值，因为i预测的时候也可以尝试不同的windowsize和overlap
     parser.add_argument("--window_size",type=int,default=100)
     parser.add_argument("--overlap",type=int,default=50)
     parser.add_argument("--pretrained_model_path",default=r'/home/wangnan/pretrained_models/bert-base-uncased')
@@ -41,9 +45,11 @@ def args_parser():
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
+    parser.add_argument("--threshold",type=int,default=3,help="一个可能存在的关系在训练集出现的最小次数")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_grad_norm",type=float,default=1)
     parser.add_argument("--seed",type=int,default=209)
+    parser.add_argument("--amp",action="store_true",help="是否开启混合精度")
     parser.add_argument("--not_save",action="store_true",help="是否保存模型")
     parser.add_argument("--reload",action="store_true",help="是否重新构造缓存的数据")
     parser.add_argument("--eval",action="store_true",help="是否在验证集上评估模型(目前统一当作NER任务评估)")
@@ -68,6 +74,8 @@ def reduce_tensor(tensor: torch.Tensor) -> torch.Tensor:
 def train(args,train_dataloader,dev_dataloader=None):
     model = MyModel(args)
     model.train()
+    if args.amp:
+        scaler = GradScaler()
     #device = torch.device('cuda:%d'%args.local_rank) if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
     device = args.local_rank if args.local_rank!=-1 else (torch.device('cuda:0') if torch.cuda.is_available() else torch.device('cpu'))
     if args.local_rank!=-1:
@@ -106,28 +114,24 @@ def train(args,train_dataloader,dev_dataloader=None):
                                                                           batch['context_mask'],batch['turn_mask'],batch['tags']
             txt_ids, attention_mask, token_type_ids, context_mask, turn_mask, tags = txt_ids.to(device),attention_mask.to(device),token_type_ids.to(device),\
                                                                                context_mask.to(device),turn_mask.to(device),tags.to(device)
-            loss,(loss_t1,loss_t2) = model(txt_ids, attention_mask, token_type_ids, context_mask, turn_mask,tags)
-            loss.backward()
+            if args.amp:
+                with autocast():
+                    loss,(loss_t1,loss_t2) = model(txt_ids, attention_mask, token_type_ids, context_mask, turn_mask,tags)
+                scaler.scale(loss).backward()
+                if args.max_grad_norm>0:
+                    scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), args.max_grad_norm)
+                scaler.step(optimizer)
+                scaler.update()
+            else:
+                loss,(loss_t1,loss_t2) = model(txt_ids, attention_mask, token_type_ids, context_mask, turn_mask,tags)
+                loss.backward()
+                if args.max_grad_norm>0:
+                    clip_grad_norm_(model.parameters(),args.max_grad_norm)
+                optimizer.step()
             lr = optimizer.param_groups[0]['lr']
             named_parameters = [(n,p) for n,p in model.named_parameters() if not p.grad is None]
             grad_norm = torch.norm(torch.stack([torch.norm(p.grad) for n,p in named_parameters])).item()
-            if args.max_grad_norm>0:
-                clip_grad_norm_(model.parameters(),args.max_grad_norm)
-            if args.tensorboard and  args.local_rank<1:
-                #下面的代码需要改
-                l=[]
-                for n,p in named_parameters:
-                    a1 = n
-                    a2 = p
-                    a3 = p.grad
-                    a4 = torch.norm(a3)
-                    l.append((a1,a2,a3,a4))
-                for a1,a2,a3,a4 in l:
-                    writer.add_histogram('gradient_dist_%s'%a1,a3)
-                    writer.add_histogram("param_dist_%s"%a1,a2)
-                    writer.add_scalar("gradient_norm_%s"%a1,a4)
-                writer.add_scalars("gradient_norm_l",{a1:a4 for a1,a2,a3,a4 in l})
-            optimizer.step()
             if args.warmup_ratio>0:
                 scheduler.step()
             reduced_loss = reduce_tensor(loss.data) if args.local_rank!=-1 else loss.item()
@@ -165,6 +169,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
+            model.train()
         if args.local_rank!=-1:
             torch.distributed.barrier()
     if args.local_rank!=-1 and args.tensorboard:
