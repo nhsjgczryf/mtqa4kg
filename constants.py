@@ -53,4 +53,4 @@ ace2005_dist = [[  0.,   0.,   0.,   0.,   0.,   0.,   0.,   3.,   1.,   0.,   0
           0.,   2.,   0.,   0.,   0.,   0.,   0.,   0.,   0.,   0.,   0.,
           0.,   0.,   0.,   0.,   0.,   0.,   0.,   0.,   0.]]
 
-ace2005_question_templates = json.load(open('/home/wangnan/mtqa4kg/data/query_templates/ace2005.json'))
+ace2005_question_templates = json.load(open('./data/query_templates/ace2005.json'))
