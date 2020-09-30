@@ -45,7 +45,7 @@ def args_parser():
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
-    parser.add_argument("--threshold",type=int,default=3,help="一个可能存在的关系在训练集出现的最小次数")
+    parser.add_argument("--threshold",type=int,default=5,help="一个可能存在的关系在训练集出现的最小次数")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_grad_norm",type=float,default=1)
     parser.add_argument("--seed",type=int,default=209)
@@ -177,19 +177,19 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
-    args.debug=False
+    args.debug=True
     if args.debug:
         args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
         args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
         #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
-        #args.eval=True
+        args.eval=True
         args.test_eval=True
         args.reload=True
         args.not_save=True
-        args.turn2_down_sample_ratio=0.1#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
+        args.turn2_down_sample_ratio=1/15#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
         args.dynamic_sample = True
         args.max_epochs=2000
     set_seed(args.seed)
