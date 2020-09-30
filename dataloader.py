@@ -148,7 +148,8 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch):
         else:
             negative_t2[q]=ans
     n_negative = (1-down_sample_ratio)*len(possitive_t2)/(down_sample_ratio+1e-10)
-    n_negative = int(n_negative)
+    n_negative = round(n_negative)
+    print("n_negative:",n_negative, 0<n_negative<=len(t2))
     if 0<n_negative<=len(t2):
         #得到每个负样本出现的概率
         neg_prob = {}
@@ -163,6 +164,10 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch):
         indexs =  np.random.choice(len(negative_t2),n_negative,False,neg_weight)
         negative_t2 = [negative_t2[i] for i in indexs]
         negative_t2 = dict(negative_t2)
+    elif n_negative==0:
+        negative_t2 = {}
+    print("positive len:",len(possitive_t2))
+    print("negative len:",len(negative_t2))
     possitive_t2.update(negative_t2)
     return possitive_t2
 
@@ -198,14 +203,18 @@ class MyDataset:
     #下面这个函数最好是每个一个epoch就调用一次，这样可以使我们的采用更有多样性
     def init_data(self):
         self.all_qas = []
+        print(len(self.data))
         for d in tqdm(self.data, desc="dataset"):
             context = d['context']
             title = d['title']
             qa_pairs = d['qa_pairs']
             t1 = qa_pairs[0]
+            print("len t1:",len(t1))
             t2 = qa_pairs[1]
+            print("len t2 pre:",len(t2))
             #t2 = t2_down_sample(t2,self.down_sample_ratio,self.epoch)#debug的时候我们不要采样
             t2 = t2_down_sample_prob(t2,self.down_sample_ratio,self.epoch)
+            print("len t2 after:",len(t2))
             qas = []
             t1_qas = []
             t2_qas = []
