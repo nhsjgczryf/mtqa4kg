@@ -155,7 +155,7 @@ def tag_decode(tags,context_mask=None):
             if tags[i][j]==tag_idxs['S']:
                 span.append([j,j+1])
                 j+=1
-            elif tags[i][j]==tag_idxs['B']:
+            elif tags[i][j]==tag_idxs['B'] and j<e-1:
                 #不是语法严格的解码，只要在遇到下一个B和S之前找到E就行(前期预测的结果很可能是语法不正确的)
                 for k in range(j+1,e):
                     if tags[i][k] in [tag_idxs['B'],tag_idxs['S']]:
@@ -165,12 +165,9 @@ def tag_decode(tags,context_mask=None):
                         span.append([j,k+1])
                         j=k+1
                         break
-                if k==e-1:#最后一个位置为O或者M跳出的情况
-                    j=k+1
-                    break
-                elif k<j+1:#j==e-1的情况，
-                    j+=1
-                    break
+                    elif k==e-1:
+                        #到末尾了，也没有找到的情况
+                        j=k+1
             else:
                 j+=1
         spans[i]=span

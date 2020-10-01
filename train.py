@@ -26,29 +26,30 @@ def set_seed(seed):
 def args_parser():
     parser = argparse.ArgumentParser()
     parser.add_argument("--dataset_tag",default='ACE2005',choices=['ACE2005','ACE2004'])
-    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json")
+    parser.add_argument("--train_path",help="json数据的路径，或者dataloader的路径",default="./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/train.json")
     parser.add_argument("--train_batch",type=int,default=10)
-    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_train.json")
+    parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default="./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/dev.json")
     parser.add_argument("--dev_batch",type=int,default=10)
-    parser.add_argument("--test_path",default="/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/one_test.json")
+    parser.add_argument("--test_path",default="./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/test.json")
     parser.add_argument("--test_batch",type=int,default=10)
     parser.add_argument("--turn2_down_sample_ratio",default=0.5,type=float,help="取值为0-1，代表每篇文章的")
     parser.add_argument("--dynamic_sample",action="store_true",help="是否每个epoch重新采样")
-    parser.add_argument("--max_len",default=300,type=int,help="输入的最大长度")#这个参数和我们数据处理的窗口大小有一定的关系
-    #window_size和overlap这两个参数在数据预处理阶段也有，但这里是预测时候的取值，因为i预测的时候也可以尝试不同的windowsize和overlap
-    parser.add_argument("--window_size",type=int,default=100)
-    parser.add_argument("--overlap",type=int,default=50)
-    parser.add_argument("--pretrained_model_path",default=r'/home/wangnan/pretrained_models/bert-base-uncased')
-    parser.add_argument("--max_epochs",default=10,type=int)
-    parser.add_argument("--warmup_ratio",type=float,default=-1)
+    #这个参数和我们数据处理的窗口大小有关系，数据预处理的时候窗口大小设置合理，是不需要过多考虑max_len这个参数的
+    parser.add_argument("--max_len",default=300,type=int,help="BERT模型允许输入的最大长度，这个值应该小于512")
+    #window_size和overlap这两个参数在数据预处理阶段也有，但这里是预测时候的取值，因为预测的时候也可以尝试不同的windowsize和overlap
+    parser.add_argument("--window_size",type=int,default=300)
+    parser.add_argument("--overlap",type=int,default=45)
+    parser.add_argument("--pretrained_model_path",default=r'bert-base-uncased')
+    parser.add_argument("--max_epochs",default=5,type=int)
+    parser.add_argument("--warmup_ratio",type=float,default=0.1)
     parser.add_argument("--lr",type=float,default=2e-5)
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
-    parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
+    parser.add_argument("--theta",type=float,help="，这是第一轮问答的权重，用于调节两个任务的权重",default=0.25)
     parser.add_argument("--threshold",type=int,default=5,help="一个可能存在的关系在训练集出现的最小次数")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
-    parser.add_argument("--max_grad_norm",type=float,default=1)
-    parser.add_argument("--seed",type=int,default=209)
+    parser.add_argument("--max_grad_norm",type=float,default=0.5)
+    parser.add_argument("--seed",type=int,default=0)
     parser.add_argument("--amp",action="store_true",help="是否开启混合精度")
     parser.add_argument("--not_save",action="store_true",help="是否保存模型")
     parser.add_argument("--reload",action="store_true",help="是否重新构造缓存的数据")
@@ -177,11 +178,11 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
-    args.debug=True
+    args.debug=False
     if args.debug:
-        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
+        args.train_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        args.dev_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        args.test_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
         #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
@@ -189,7 +190,8 @@ if __name__=="__main__":
         args.test_eval=True
         args.reload=True
         args.not_save=True
-        args.turn2_down_sample_ratio=1/15#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
+        args.threshold = 5
+        args.turn2_down_sample_ratio=0.5 #之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
         args.dynamic_sample = True
         args.max_epochs=2000
     set_seed(args.seed)
@@ -203,27 +205,28 @@ if __name__=="__main__":
         if not os.path.exists(p1) or args.reload:
             #debug的时候，关闭shuffle，训练的时候记得开启
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
-                                         args.local_rank != -1, shuffle=False,down_sample_ratio=args.turn2_down_sample_ratio)
+                                         args.local_rank != -1, shuffle=True,down_sample_ratio=args.turn2_down_sample_ratio,threshold=args.threshold)
             pickle.dump(train_dataloader,open(p1,'wb'))
         else:
             train_dataloader = pickle.load(open(p1, 'rb'))
+            train_dataloader.dataset.down_sample_ratio = args.turn2_down_sample_ratio
+            train_dataloader.dataset.threshold = args.threshold
             if isinstance(train_dataloader.sampler, torch.utils.data.DistributedSampler):
                 train_dataloader.sampler.rank = args.local_rank
-    else:
-        train_dataloader = pickle.load(open(args.train_path,'rb'))
-        if isinstance(train_dataloader.sampler,torch.utils.data.DistributedSampler):
-            train_dataloader.sampler.rank=args.local_rank
+            train_dataloader.dataset.init_data()
     if args.eval:
+        #这里的验证集，为了节约评估时间，我们是当作ner的任务来评估的，和test上的评估是存在一定的失真的，为了保证对所有的关系可能都进行评估，down sample ratio要取得很低
         if args.dev_path.endswith('.json'):
             p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1) or args.reload:
-                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,down_sample_ratio=0.5)
+                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,0.000001,threshold=args.threshold)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
             else:
                 dev_dataloader = pickle.load(open(p1, "rb"))
-        else:
-            dev_dataloader = pickle.load(open(args.dev_path,"rb"))
+                dev_dataloader.dataset.threshold = args.threshold
+                dev_dataloader.dataset.init_data()
+
     else:
         dev_dataloader = None
     train(args,train_dataloader,dev_dataloader)

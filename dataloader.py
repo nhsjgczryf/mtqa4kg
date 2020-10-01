@@ -60,7 +60,7 @@ def collate_fn1(batch):
     return nbatch
 
 
-def get_inputs(context,q,tokenizer,title="",max_len=200,ans=[]):
+def get_inputs(context,q,tokenizer,title="",max_len=512,ans=[]):
     """
     Args:
         context: 已经被tokenize后的上下文
@@ -108,28 +108,6 @@ def get_inputs(context,q,tokenizer,title="",max_len=200,ans=[]):
         token_type_ids = [0]*(len(query)+len(title)+3)+[1]*(len(context) + 1)
     return txt_ids, tags1, context_mask, token_type_ids
 
-def t2_down_sample(t2,down_sample_ratio,epoch):
-    """
-    Args:
-        t2: 字典，其元素为 query:{relation1,relation2,...}
-        down_sample_ratio: 第二轮问答中包含答案的样本所占的比例
-    """
-    import random
-    random.seed(epoch)
-    possitive_t2 = {}
-    negative_t2 = {}
-    for q,ans in t2.items():
-        if ans:
-            possitive_t2[q]=ans
-        else:
-            negative_t2[q]=ans
-    n_negative = (1-down_sample_ratio)*len(possitive_t2)/(down_sample_ratio+1e-10)
-    n_negative = int(n_negative)
-    if n_negative<=len(t2):
-        negative_t2 = random.sample(negative_t2.items(),n_negative)
-        negative_t2 = dict(negative_t2)
-    possitive_t2.update(negative_t2)
-    return possitive_t2
 
 def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
     import numpy as np
@@ -147,7 +125,7 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
         else:
             negative_t2[q]=ans
     n_negative = (1-down_sample_ratio)*len(possitive_t2)/(down_sample_ratio+1e-10)
-    n_negative = round(n_negative)
+    n_negative = min(round(n_negative),len(negative_t2))
     if 0<n_negative<=len(t2):
         #得到每个负样本出现的概率
         neg_prob = {}
@@ -161,6 +139,7 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
         neg_prob = np.array(neg_prob)
         neg_prob = neg_prob>=threshold
         neg_weight = neg_prob/neg_prob.sum()
+        n_negative = min(neg_prob.sum(),n_negative)
         indexs =  np.random.choice(len(negative_t2),n_negative,False,neg_weight)
         negative_t2 = [negative_t2[i] for i in indexs]
         negative_t2 = dict(negative_t2)
@@ -355,9 +334,9 @@ class T2Dataset:
         return self.t2_qas[i]
 
 
-def load_data(file_path, batch_size, max_len, pretrained_model_path, dist=False, shuffle=False,down_sample_ratio=0.5):
+def load_data(file_path, batch_size, max_len, pretrained_model_path, dist=False, shuffle=False,down_sample_ratio=0.5,threshold=5):
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
-    dataset = MyDataset(file_path, tokenizer, max_len,down_sample_ratio)
+    dataset = MyDataset(file_path, tokenizer, max_len,down_sample_ratio,threshold)
     sampler = DistributedSampler(dataset) if dist else None
     dataloader = DataLoader(dataset, batch_size, sampler=sampler, shuffle=shuffle if not sampler else False,
                             collate_fn=collate_fn)
@@ -371,8 +350,8 @@ def load_t1_data(test_path, pretrained_model_path, window_size, overlap, batch_s
     return dataloader
 
 
-def load_t2_data(t1_dataset, t1_predict, batch_size=10):
-    t2_dataset = T2Dataset(t1_dataset, t1_predict)
+def load_t2_data(t1_dataset, t1_predict, batch_size=10,threshold=5):
+    t2_dataset = T2Dataset(t1_dataset, t1_predict,threshold)
     dataloader = DataLoader(t2_dataset, batch_size, collate_fn=collate_fn1)
     return dataloader
 
