@@ -1,0 +1,1 @@
+python train.py --train_batch 20 --amp  --not_save --test_eval --turn2_down_sample_ratio 0.05 --reload

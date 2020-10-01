@@ -1,0 +1,40 @@
+2020-10-01 09:44:52.240268: I tensorflow/stream_executor/platform/default/dso_loader.cc:48] Successfully opened dynamic library libcudart.so.10.1
+Namespace(amp=True, dataset_tag='ACE2005', debug=False, dev_batch=10, dev_path='./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/dev.json', dropout_prob=0.1, dynamic_sample=False, eval=False, local_rank=-1, lr=2e-05, max_epochs=5, max_grad_norm=0.5, max_len=300, not_save=True, overlap=45, pretrained_model_path='bert-base-uncased', reload=True, seed=0, strong_tensorboard_log_step=-1, tensorboard=False, test_batch=10, test_eval=True, test_path='./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/test.json', theta=0.25, threshold=5, train_batch=20, train_path='./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/train.json', turn2_down_sample_ratio=0.05, warmup_ratio=0.1, weight_decay=0.01, window_size=300)
+dataset: 100% 734/734 [02:05<00:00,  5.85it/s]
+epoch:0:   0%|                                                                                                               | 0/4529 [00:00<?, ?it/s]/usr/local/lib/python3.6/dist-packages/torch/optim/lr_scheduler.py:123: UserWarning: Detected call of `lr_scheduler.step()` before `optimizer.step()`. In PyTorch 1.1.0 and later, you should call them in the opposite order: `optimizer.step()` before `lr_scheduler.step()`.  Failure to do this will result in PyTorch skipping the first value of the learning rate schedule. See more details at https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate
+  "https://pytorch.org/docs/stable/optim.html#how-to-adjust-learning-rate", UserWarning)
+epoch:0: 100%|████████████████████████████████████████| 4529/4529 [24:44<00:00,  3.05it/s, norm:0.40,lr:1.8e-05,loss:1.05e-02,t1:4.06e-02,t2:4.90e-04]
+t1_dataset: 100% 80/80 [00:00<00:00, 118.44it/s]
+t1 predict: 100% 119/119 [00:06<00:00, 18.36it/s]
+t2 dataset: 100% 1190/1190 [01:05<00:00, 18.25it/s]
+t2 predict: 100% 6937/6937 [06:05<00:00, 18.98it/s]
+Turn 1: precision:0.8855 recall:0.8278 f1:0.8557
+Turn 2: precision:0.0000 recall:0.0000 f1:0.0000
+epoch:1: 100%|████████████████████████████████████████| 4529/4529 [24:43<00:00,  3.05it/s, norm:0.31,lr:1.3e-05,loss:3.88e-03,t1:1.52e-02,t2:1.26e-04]
+t1_dataset: 100% 80/80 [00:00<00:00, 121.48it/s]
+t1 predict: 100% 119/119 [00:06<00:00, 18.35it/s]
+t2 dataset: 100% 1190/1190 [01:07<00:00, 17.64it/s]
+t2 predict: 100% 7265/7265 [06:24<00:00, 18.91it/s]
+Turn 1: precision:0.9000 recall:0.8709 f1:0.8852
+Turn 2: precision:0.2034 recall:0.0209 f1:0.0378
+epoch:2: 100%|████████████████████████████████████████| 4529/4529 [24:42<00:00,  3.05it/s, norm:0.12,lr:8.9e-06,loss:1.98e-03,t1:5.50e-03,t2:8.07e-04]
+t1_dataset: 100% 80/80 [00:00<00:00, 120.38it/s]
+t1 predict: 100% 119/119 [00:06<00:00, 18.33it/s]
+t2 dataset: 100% 1190/1190 [01:10<00:00, 16.91it/s]
+t2 predict: 100% 7563/7563 [06:39<00:00, 18.93it/s]
+Turn 1: precision:0.8846 recall:0.8957 f1:0.8901
+Turn 2: precision:0.2555 recall:0.0904 f1:0.1335
+epoch:3: 100%|████████████████████████████████████████| 4529/4529 [24:43<00:00,  3.05it/s, norm:0.08,lr:4.4e-06,loss:9.12e-04,t1:2.77e-03,t2:2.92e-04]
+t1_dataset: 100% 80/80 [00:00<00:00, 118.81it/s]
+t1 predict: 100% 119/119 [00:06<00:00, 18.30it/s]
+t2 dataset: 100% 1190/1190 [01:09<00:00, 17.05it/s]
+t2 predict: 100% 7396/7396 [06:31<00:00, 18.87it/s]
+Turn 1: precision:0.8956 recall:0.8934 f1:0.8945
+Turn 2: precision:0.2941 recall:0.3475 f1:0.3186
+epoch:4: 100%|████████████████████████████████████████| 4529/4529 [24:43<00:00,  3.05it/s, norm:0.06,lr:9.8e-10,loss:8.38e-04,t1:3.24e-03,t2:3.90e-05]
+t1_dataset: 100% 80/80 [00:00<00:00, 119.31it/s]
+t1 predict: 100% 119/119 [00:06<00:00, 18.25it/s]
+t2 dataset: 100% 1190/1190 [01:10<00:00, 16.93it/s]
+t2 predict: 100% 7450/7450 [06:34<00:00, 18.88it/s]
+Turn 1: precision:0.8910 recall:0.8928 f1:0.8919
+Turn 2: precision:0.2618 recall:0.4379 f1:0.3277
