@@ -15,7 +15,7 @@ from torch.nn.utils import clip_grad_norm_
 from model import MyModel
 from evaluation import dev_evaluation,test_evaluation
 
-from dataloader import load_data,load_t1_data
+from dataloader import load_data,load_t1_data,reload_data
 
 def set_seed(seed):
     random.seed(seed)
@@ -46,6 +46,7 @@ def args_parser():
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
     parser.add_argument("--threshold",type=int,default=5,help="一个可能存在的关系在训练集出现的最小次数")
+    parser.add_argument("--max_distance",type=int,default=100,help="一个关系的两个实体的start索引之间间隔的最多的wordpiece token的数量")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_grad_norm",type=float,default=1)
     parser.add_argument("--seed",type=int,default=209)
@@ -166,7 +167,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             model.train()
         if args.test_eval and args.local_rank in [-1,0]:
             test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
-            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader)
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
             model.train()
@@ -179,18 +180,19 @@ if __name__=="__main__":
     args = args_parser()
     args.debug=True
     if args.debug:
-        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
-        #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
-        #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
-        #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
+        #args.train_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        #args.dev_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
+        #args.test_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
+        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
         args.eval=True
         args.test_eval=True
         args.reload=True
         args.not_save=True
+        args.threshold=0
         args.turn2_down_sample_ratio=1/15#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
-        args.dynamic_sample = True
+        args.dynamic_sample = False
         args.max_epochs=2000
     set_seed(args.seed)
     print(args)
@@ -203,27 +205,22 @@ if __name__=="__main__":
         if not os.path.exists(p1) or args.reload:
             #debug的时候，关闭shuffle，训练的时候记得开启
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
-                                         args.local_rank != -1, shuffle=False,down_sample_ratio=args.turn2_down_sample_ratio)
+                                         args.local_rank != -1, shuffle=False,down_sample_ratio=args.turn2_down_sample_ratio,threshold=args.threshold)
             pickle.dump(train_dataloader,open(p1,'wb'))
         else:
             train_dataloader = pickle.load(open(p1, 'rb'))
-            if isinstance(train_dataloader.sampler, torch.utils.data.DistributedSampler):
-                train_dataloader.sampler.rank = args.local_rank
-    else:
-        train_dataloader = pickle.load(open(args.train_path,'rb'))
-        if isinstance(train_dataloader.sampler,torch.utils.data.DistributedSampler):
-            train_dataloader.sampler.rank=args.local_rank
+            train_dataloader = reload_data(train_dataloader,args.train_batch,args.max_len,args.down_sample_ratio,args.threshold,args.local_rank,True)
     if args.eval:
+        #这里的验证集，为了节约评估时间，我们是当作ner的任务来评估的，和test上的评估是存在一定的失真的，为了保证对所有的关系可能都进行评估，down sample ratio要取得很低
         if args.dev_path.endswith('.json'):
             p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1) or args.reload:
-                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,down_sample_ratio=0.5)
+                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,0.000001,threshold=args.threshold)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
             else:
                 dev_dataloader = pickle.load(open(p1, "rb"))
-        else:
-            dev_dataloader = pickle.load(open(args.dev_path,"rb"))
+                dev_dataloader = reload_data(dev_dataloader,args.dev_batch,args.max_len,1e-10,args.threshold,-1,False)
     else:
         dev_dataloader = None
     train(args,train_dataloader,dev_dataloader)

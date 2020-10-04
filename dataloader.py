@@ -108,29 +108,6 @@ def get_inputs(context,q,tokenizer,title="",max_len=200,ans=[]):
         token_type_ids = [0]*(len(query)+len(title)+3)+[1]*(len(context) + 1)
     return txt_ids, tags1, context_mask, token_type_ids
 
-def t2_down_sample(t2,down_sample_ratio,epoch):
-    """
-    Args:
-        t2: 字典，其元素为 query:{relation1,relation2,...}
-        down_sample_ratio: 第二轮问答中包含答案的样本所占的比例
-    """
-    import random
-    random.seed(epoch)
-    possitive_t2 = {}
-    negative_t2 = {}
-    for q,ans in t2.items():
-        if ans:
-            possitive_t2[q]=ans
-        else:
-            negative_t2[q]=ans
-    n_negative = (1-down_sample_ratio)*len(possitive_t2)/(down_sample_ratio+1e-10)
-    n_negative = int(n_negative)
-    if n_negative<=len(t2):
-        negative_t2 = random.sample(negative_t2.items(),n_negative)
-        negative_t2 = dict(negative_t2)
-    possitive_t2.update(negative_t2)
-    return possitive_t2
-
 def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
     import numpy as np
     np.random.seed(epoch)
@@ -146,8 +123,9 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
             possitive_t2[q]=ans
         else:
             negative_t2[q]=ans
-    n_negative = (1-down_sample_ratio)*len(possitive_t2)/(down_sample_ratio+1e-10)
-    n_negative = round(n_negative)
+    #注意考虑没有正样本的情况，我们假设存在一个正样本，然后仍然对负样本采样
+    n_negative = (1-down_sample_ratio)*max(len(possitive_t2),1)/(down_sample_ratio+1e-10)
+    n_negative = min(round(n_negative),len(negative_t2))
     if 0<n_negative<=len(t2):
         #得到每个负样本出现的概率
         neg_prob = {}
@@ -161,6 +139,7 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
         neg_prob = np.array(neg_prob)
         neg_prob = neg_prob>=threshold
         neg_weight = neg_prob/neg_prob.sum()
+        n_negative = min(neg_prob.sum(),n_negative)
         indexs =  np.random.choice(len(negative_t2),n_negative,False,neg_weight)
         negative_t2 = [negative_t2[i] for i in indexs]
         negative_t2 = dict(negative_t2)
@@ -168,6 +147,7 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
         negative_t2 = {}
     possitive_t2.update(negative_t2)
     return possitive_t2
+
 
 def query2relation(question,question_templates):
     '''
@@ -297,7 +277,7 @@ class T1Dataset:
         return self.t1_qas[i]
 
 
-class T2Dataset:
+class old_T2Dataset:
 
     def __init__(self, t1_dataset, t1_predict,threshold=5):
         '''
@@ -355,12 +335,185 @@ class T2Dataset:
         return self.t2_qas[i]
 
 
-def load_data(file_path, batch_size, max_len, pretrained_model_path, dist=False, shuffle=False,down_sample_ratio=0.5):
+
+class T2Dataset:
+    def __init__(self, t1_dataset, t1_predict,threshold=5,max_distance=100):
+        '''
+        Args:
+            t1_dataset: 第一轮问答用到的dataset，是上面的T1Dataset类的实例
+            t1_predict: 第一轮问答得到的答案，t1_predict[i]代表dataset1中的(p_idi,s_idi,q_idi)对应的样本的答案。(未修正，是window种的索引)
+        '''
+        tokenizer = t1_dataset.tokenizer
+        max_len = t1_dataset.max_len
+        t1_ids = t1_dataset.t1_ids
+        passages = t1_dataset.passages
+        titles = t1_dataset.titles
+        passage_windows = t1_dataset.passage_windows
+        self.t2_qas = []
+        self.t2_ids = []
+        self.t2_gold = []
+        self.query_offset2 = []
+        relations = t1_dataset.relations
+        entities = t1_dataset.entities
+        query_offset1 = t1_dataset.query_offset1
+        window_offset_base = t1_dataset.window_offset_base
+        for passage_id, (ents, rels) in enumerate(zip(entities, relations)):
+            for re in rels:
+                head, rel, end = ents[re[1]], re[0], ents[re[2]]
+                self.t2_gold.append((passage_id, (tuple(head[:-1]), rel, tuple(end[:-1]))))
+        if max_distance>0:
+            #对所有的predict，添加对应的str信息
+            t1_predict1 = []
+            t1_ids1 = []
+            for i,(_id, pre) in enumerate(zip(t1_ids,t1_predict)):
+                passage_id,window_id= _id[0],_id[1]
+                window_offset = window_id*window_offset_base
+                pre1 = []
+                for start, end in pre:
+                    start1,end1 = start-query_offset1[i]+window_offset, end-query_offset1[i]+window_offset
+                    ent_str = tokenizer.convert_tokens_to_string(passages[passage_id][start1:end1])
+                    t1_predict1.append((start1,end1,ent_str))
+                    t1_ids1.append(_id)
+            #这里我们考虑按照(passage_id,window_id)进行聚类，因为我们需要根据window_id进行聚类
+            ids_and_predict = list(zip(t1_ids1,t1_predict1))
+            dict1 = {(_id[0],_id[1]):[] for _id,pre in ids_and_predict}
+            for _id,pre in ids_and_predict:
+                dict1[(_id[0],_id[1])].append((_id,pre))
+            for (passage_id,window_id),_ids_and_pres in dict1.items():
+                    #对同一个window内的预测的实体按照start的索引进行排序
+                    _ids_and_pres = sorted(_ids_and_pres,key=lambda x: x[1][0])
+                    context =  passage_windows[passage_id][window_id]
+                    title = titles[passage_id]
+                    for i, (_id1,pre1) in enumerate(_ids_and_pres):
+                        start = pre1[0]
+                        for j,(_id2,pre2) in enumerate(_ids_and_pres[i+1:],i+1):
+                            if pre2[0]>start+max_distance:
+                                break
+                            else:
+                                head_type, end_type = _id1[-1],_id2[-1]
+                                for rel_type in ace2005_relations:
+                                    idx1,idx2 =ace2005_idx1[head_type],ace2005_idx2[(rel_type,end_type)]
+                                    if ace2005_dist[idx1][idx2]>=threshold:
+                                        head_entity = (_id1[-1],pre1[0],pre1[1],pre1[2])
+                                        query = get_question(ace2005_question_templates,head_entity,rel_type,end_type)
+                                        txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len)
+                                        self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
+                                                            "token_type_ids": token_type_ids})
+                                        self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel_type, end_type))
+                                        ofs = len(title) + len(tokenizer.tokenize(query)) + 3
+                                        self.query_offset2.append(ofs)
+        else:
+            #这个是最初的不考虑第一阶段中window预测得到的实体
+            for i,(_id,pre) in enumerate(zip(tqdm(t1_ids,desc="t2 dataset"),t1_predict)):
+                passage_id, window_id, head_entity_type = _id
+                window_offset = window_offset_base*window_id
+                context = passage_windows[passage_id][window_id]
+                title = titles[passage_id]
+                head_entities = []
+                for start,end in pre:
+                    start1,end1 = start-query_offset1[i]+window_offset,end-query_offset1[i]+window_offset
+                    ent_str = tokenizer.convert_tokens_to_string(passages[passage_id][start1:end1])
+                    head_entity = (head_entity_type, start1, end1,ent_str)
+                    head_entities.append(head_entity)
+                for head_entity in head_entities:
+                    for rel in ace2005_relations:
+                        for end_ent_type in ace2005_entities:
+                            # 这里暂时考虑所有的情况
+                            idx1,idx2 = ace2005_idx1[head_entity[0]],ace2005_idx2[(rel,end_ent_type)]
+                            if ace2005_dist[idx1][idx2]>=threshold:
+                                query = get_question(ace2005_question_templates,head_entity, rel, end_ent_type)
+                                txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len)
+                                self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
+                                                    "token_type_ids": token_type_ids})
+                                self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel, end_ent_type))
+                                ofs = len(title) + len(tokenizer.tokenize(query)) + 3
+                                self.query_offset2.append(ofs)
+
+    def __len__(self):
+        return len(self.t2_qas)
+
+    def __getitem__(self, i):
+        return self.t2_qas[i]
+
+
+class T2Dataset_Small_Window:
+
+    def __init__(self, t1_dataset, t1_predict,threshold=5,left_offset,right_offset):
+        '''
+        Args:
+            t1_dataset: 第一轮问答用到的dataset，是上面的T1Dataset类的实例
+            t1_predict: 第一轮问答得到的答案，t1_predict[i]代表dataset1中的(p_idi,s_idi,q_idi)对应的样本的答案。(未修正，是window种的索引)
+        '''
+        tokenizer = t1_dataset.tokenizer
+        max_len = t1_dataset.max_len
+        t1_ids = t1_dataset.t1_ids
+        passages = t1_dataset.passages
+        titles = t1_dataset.titles
+        passage_windows = t1_dataset.passage_windows
+        self.t2_qas = []
+        self.t2_ids = []
+        self.t2_gold = []
+        self.query_offset2 = []
+        relations = t1_dataset.relations
+        entities = t1_dataset.entities
+        query_offset1 = t1_dataset.query_offset1
+        window_offset_base = t1_dataset.window_offset_base
+        for passage_id, (ents, rels) in enumerate(zip(entities, relations)):
+            for re in rels:
+                head, rel, end = ents[re[1]], re[0], ents[re[2]]
+                self.t2_gold.append((passage_id, (tuple(head[:-1]), rel, tuple(end[:-1]))))
+        for i,(_id,pre) in enumerate(zip(tqdm(t1_ids,desc="t2 dataset"),t1_predict)):
+            passage_id, window_id, head_entity_type = _id
+            window_offset = window_offset_base*window_id
+            context = passage_windows[passage_id][window_id]
+            title = titles[passage_id]
+            head_entities = []
+            for start,end in pre:
+                start1,end1 = start-query_offset1[i]+window_offset,end-query_offset1[i]+window_offset
+                ent_str = tokenizer.convert_tokens_to_string(passages[passage_id][start1:end1])
+                head_entity = (head_entity_type, start1, end1,ent_str)
+                head_entities.append(head_entity)
+            for head_entity in head_entities:
+                for rel in ace2005_relations:
+                    for end_ent_type in ace2005_entities:
+                        # 这里暂时考虑所有的情况
+                        idx1,idx2 = ace2005_idx1[head_entity[0]],ace2005_idx2[(rel,end_ent_type)]
+                        if ace2005_dist[idx1][idx2]>=threshold:
+                            query = get_question(ace2005_question_templates,head_entity, rel, end_ent_type)
+                            txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len)
+                            self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
+                                                "token_type_ids": token_type_ids})
+                            self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel, end_ent_type))
+                            ofs = len(title) + len(tokenizer.tokenize(query)) + 3
+                            self.query_offset2.append(ofs)
+
+    def __len__(self):
+        return len(self.t2_qas)
+
+    def __getitem__(self, i):
+        return self.t2_qas[i]
+
+
+
+def load_data(file_path, batch_size, max_len, pretrained_model_path, dist=False, shuffle=False,down_sample_ratio=0.5,threshold=5):
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
-    dataset = MyDataset(file_path, tokenizer, max_len,down_sample_ratio)
+    dataset = MyDataset(file_path, tokenizer, max_len,down_sample_ratio,threshold)
     sampler = DistributedSampler(dataset) if dist else None
     dataloader = DataLoader(dataset, batch_size, sampler=sampler, shuffle=shuffle if not sampler else False,
                             collate_fn=collate_fn)
+    return dataloader
+
+def reload_data(old_dataloader,batch_size,max_len,down_sample_ratio,threshold,local_rank,shuffle=True):
+    """这里我们根据原来保存的dataloader，重新导入"""
+    dataset = old_dataloader.dataset
+    old_max_len,old_down_sample_ratio,old_threshold = dataset.max_len, dataset.down_sample_ratio,dataset.threshold
+    if not( old_max_len==max_len and old_down_sample_ratio==down_sample_ratio and old_threshold==threshold):
+        dataset.max_len =max_len
+        dataset.down_sample_ratio = down_sample_ratio
+        dataset.threshold = threshold
+        dataset.init_data()
+    sampler = DistributedSampler(dataset,rank=local_rank) if local_rank!=-1 else None
+    dataloader = DataLoader(dataset,batch_size,sampler=sampler, shuffle=shuffle,collate_fn=collate_fn)
     return dataloader
 
 
@@ -371,8 +524,8 @@ def load_t1_data(test_path, pretrained_model_path, window_size, overlap, batch_s
     return dataloader
 
 
-def load_t2_data(t1_dataset, t1_predict, batch_size=10):
-    t2_dataset = T2Dataset(t1_dataset, t1_predict)
+def load_t2_data(t1_dataset, t1_predict, batch_size=10, threshold=5, max_distance=100):
+    t2_dataset = T2Dataset(t1_dataset, t1_predict, threshold, max_distance)
     dataloader = DataLoader(t2_dataset, batch_size, collate_fn=collate_fn1)
     return dataloader
 

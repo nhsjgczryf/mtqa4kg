@@ -411,14 +411,14 @@ def get_one_synthetic_data(tokenizer,output_dir,question_templates):
     json.dump(test_data,open(os.path.join(output_dir,'one_fake_test.json'),'w'))
 
 if __name__=="__main__":
-    data_dir = "./data/raw_data/ACE2005/dev"
+    data_dir = "./data/raw_data/ACE2005/train"
     #txt_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.txt'
     #ann_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.ann'
-    window_size = 300  #窗口尽量大，但是太大会导致对我们的后续的关系抽取任务不友好，即共指的问题会被放大
+    window_size = 50  #窗口尽量大，但是太大会导致对我们的后续的关系抽取任务不友好，即共指的问题会被放大
     overlap = 15
-    is_test = True
+    is_test = False
     threshold = 4 #4已经能够覆盖训练集出现过的80%多一点的关系了 
-    max_distance = 45 #44已经是训练集里的最大值了
+    max_distance = 45 #44已经是训练集里的最大值
     from transformers import BertTokenizer
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
     #output_dir = "./data/cleaned_data/ACE2005/{}_overlap_{}_window_{}".format(os.path.split(pretrained_model_path)[-1],overlap,window_size)

@@ -51,7 +51,8 @@ def dev_evaluation(model,dataloader):
     precision,recall,f1 = get_score(gold2,predict2)
     return precision,recall,f1
 
-def test_evaluation(model,t1_dataloader):
+def test_evaluation(model,t1_dataloader,threshold,max_distance):
+    """max_distance用来确定我们是否按照max_distance对预测结果进行过滤"""
     if hasattr(model,'module'):
         model = model.module
     model.eval()
@@ -72,7 +73,7 @@ def test_evaluation(model,t1_dataloader):
             #print("t1 predict spans:",predict_spans)
             #1_gold.extend(gold_spans)
     #进行第二轮问答
-    t2_dataloader = load_t2_data(t1_dataloader.dataset,t1_predict)
+    t2_dataloader = load_t2_data(t1_dataloader.dataset,t1_predict,10,threshold,max_distance)
     with torch.no_grad():
         for i,batch in enumerate(tqdm(t2_dataloader,desc="t2 predict")):
             #txt_ids,attention_mask,token_type_ids,context_mask,tags = batch['txt_ids'],batch['attention_mask'],batch['token_type_ids'],batch['context_mask'],batch['tags']
@@ -93,7 +94,11 @@ def test_evaluation(model,t1_dataloader):
     #第一阶段的评估，即评估我们的ner的结果
     p1,r1,f1 = eval_t(t1_predict,t1_gold,t1_ids,query_offset1,window_offset_base,False)
     #第二阶段的评估，即评估我们的ner+re的综合结果
-    p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,True)
+    if max_distance>0:
+        #t2_ids, t2_predict = t2_filter(t2_ids,t2_predict,max_distance)
+        p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,max_distance)
+    else:
+        p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,True)
     return (p1,r1,f1),(p2,r2,f2)
 
 #todo: 这里为了实现的简便，我们对overlap只考虑union，后续可以考虑求交集
@@ -123,6 +128,40 @@ def eval_t(predict,gold,ids,query_offset,window_offset_base,turn2=False):
             predict1.append(new)
     return get_score(set(gold),set(predict1))
 
+def eval_t2(predict,gold,ids,query_offset,window_offset_base,max_distance=45):
+    """
+    Args:
+        predict: [(s1,e1),(s2,e2),(s3,e3),...]
+        gold: (passage_id,(entity_type,start_idx,end_idx,entity_str)) or (passage_id,(head_entity,relation_type,end_entity))
+        ids: (passage_id,window_id,head_entity,relation_type,end_entity_type)，其中head_entity中的实体索引是passage而非context中的
+        query_offset: [CLS]+title+[SEP]+query+[SEP]对应的offset
+        window_offset_base: window_size-overlap的值
+    """
+    predict1 = []
+    for i,(_id,pre) in enumerate(zip(ids,predict)):
+        passage_id, window_id, head_entity, relation_type, end_entity_type = _id
+        window_offset = window_offset_base*window_id
+        head_start = head_entity[1]
+        for start,end in pre:
+            start1,end1 = start-query_offset[i]+window_offset,end-query_offset[i]+window_offset
+            if abs(start1-head_start)<=max_distance:
+                new = (passage_id,(head_entity,relation_type,(end_entity_type,start1,end1)))
+                predict1.append(new)
+    return get_score(set(gold),set(predict1))
+
+def t2_filter(t2_ids,t2_predict,max_distance):
+    """
+    过滤掉和头实体距离超过max_distance个wordpiece token的尾实体
+    """
+    t2_ids1 = []
+    t2_predict1 = []
+    for _id, pre in zip(t2_ids,t2_predict):
+        head_start = _id[2][1]
+        end_start = pre[0]
+        if end_start-head_start<=max_distance:
+            t2_ids1.append(_id)
+            t2_predict1.append(pre)
+    return t2_ids1,t2_predict1
 
 def tag_decode(tags,context_mask=None):
     """
@@ -155,7 +194,7 @@ def tag_decode(tags,context_mask=None):
             if tags[i][j]==tag_idxs['S']:
                 span.append([j,j+1])
                 j+=1
-            elif tags[i][j]==tag_idxs['B']:
+            elif tags[i][j]==tag_idxs['B'] and j<e-1:
                 #不是语法严格的解码，只要在遇到下一个B和S之前找到E就行(前期预测的结果很可能是语法不正确的)
                 for k in range(j+1,e):
                     if tags[i][k] in [tag_idxs['B'],tag_idxs['S']]:
@@ -165,12 +204,9 @@ def tag_decode(tags,context_mask=None):
                         span.append([j,k+1])
                         j=k+1
                         break
-                if k==e-1:#最后一个位置为O或者M跳出的情况
-                    j=k+1
-                    break
-                elif k<j+1:#j==e-1的情况，
-                    j+=1
-                    break
+                    elif k==e-1:
+                        #到末尾了，也没有找到的情况
+                        j=k+1
             else:
                 j+=1
         spans[i]=span
