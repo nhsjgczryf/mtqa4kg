@@ -6,6 +6,7 @@ import torch
 
 def get_score(gold_set,predict_set):
     """得到两个集合的precision,recall.f1"""
+    print("len gold",len(gold_set),"len predict",len(predict_set))
     TP = len(set.intersection(gold_set,predict_set))
     precision = TP/(len(predict_set)+1e-6)
     recall = TP/(len(gold_set)+1e-6)
@@ -51,7 +52,93 @@ def dev_evaluation(model,dataloader):
     precision,recall,f1 = get_score(gold2,predict2)
     return precision,recall,f1
 
-def test_evaluation(model,t1_dataloader):
+def full_dev_evaluation(model,dataloader):
+    """验证集上的评估直接当作NER任务的评估来做，不考虑多轮问答"""
+    if hasattr(model,'module'):
+        model = model.module
+    model.eval()
+    device = torch.device("cuda") if torch.cuda.is_available() else torch.device("cpu")
+    model.to(device)
+    gold = []
+    t1_gold = []
+    t2_gold = []
+    predict = []
+    t1_predict = []
+    t1_gold = []
+    t2_predict = []
+    t2_gold = []
+    tqdm_dataloader = tqdm(dataloader,desc="dev eval")
+    with torch.no_grad():
+        for i,batch in enumerate(tqdm_dataloader):
+            txt_ids, attention_mask, token_type_ids, context_mask, turn_mask,tags=batch['txt_ids'],batch['attention_mask'],batch['token_type_ids'],\
+                                                                           batch['context_mask'],batch['turn_mask'],batch['tags']
+            tag_idxs = model(txt_ids.to(device), attention_mask.to(device), token_type_ids.to(device))
+            predict_spans = tag_decode(tag_idxs,context_mask)
+            gold_spans = tag_decode(tags)
+            turn1_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==0]
+            turn1_gold = [g for i,g in enumerate(gold_spans) if turn_mask[i]==0]
+            turn2_predict = [p for i,p in enumerate(predict_spans) if turn_mask[i]==1]
+            turn2_gold = [g for i,g in enumerate(gold_spans) if turn_mask[i]==1]
+            predict.append((i,predict_spans))
+            gold.append((i,gold_spans))
+            t1_predict.append((i,turn1_predict))
+            t1_gold.append((i,turn1_gold))
+            t2_predict.append((i,turn2_predict))
+            t2_gold.append((i,turn2_gold))
+    gold2 = set()
+    predict2 = set()
+    for g in gold:
+        i,gold_spans = g
+        for j,gs in enumerate(gold_spans):
+            for gsi in gs:
+                item = (i,j,gsi[0],gsi[1])
+                gold2.add(item)
+    for p in predict:
+        i,pre_spans = p
+        for j, ps in enumerate(pre_spans):
+            for psi in ps:
+                item = (i,j, psi[0],psi[1])
+                predict2.add(item)
+    precision,recall,f1 = get_score(gold2,predict2)
+    print(precision,recall,f1,len(gold2),len(predict2))
+    t1_gold2 = set()
+    t1_predict2 = set()
+    for g in t1_gold:
+        i,gold_spans = g
+        for j,gs in enumerate(gold_spans):
+            for gsi in gs:
+                item = (i,j,gsi[0],gsi[1])
+                t1_gold2.add(item)
+    for p in t1_predict:
+        i,pre_spans = p
+        for j, ps in enumerate(pre_spans):
+            for psi in ps:
+                item = (i,j, psi[0],psi[1])
+                t1_predict2.add(item)
+    t1_precision,t1_recall,t1_f1 = get_score(t1_gold2,t1_predict2)
+    print(t1_precision,t1_recall,t1_f1,len(t1_gold2),len(t1_predict2))
+
+
+    t2_gold2 = set()
+    t2_predict2 = set()
+    for g in t2_gold:
+        i,gold_spans = g
+        for j,gs in enumerate(gold_spans):
+            for gsi in gs:
+                item = (i,j,gsi[0],gsi[1])
+                t2_gold2.add(item)
+    for p in t2_predict:
+        i,pre_spans = p
+        for j, ps in enumerate(pre_spans):
+            for psi in ps:
+                item = (i,j, psi[0],psi[1])
+                t2_predict2.add(item)
+    t2_precision,t2_recall,t2_f1 = get_score(t2_gold2,t2_predict2)
+    print(t2_precision,t2_recall,t2_f1,len(t2_gold2),len(t2_predict2))
+
+    return precision,recall,f1
+
+def test_evaluation(model,t1_dataloader,threshold,max_distance):
     if hasattr(model,'module'):
         model = model.module
     model.eval()
@@ -72,7 +159,7 @@ def test_evaluation(model,t1_dataloader):
             #print("t1 predict spans:",predict_spans)
             #1_gold.extend(gold_spans)
     #进行第二轮问答
-    t2_dataloader = load_t2_data(t1_dataloader.dataset,t1_predict)
+    t2_dataloader = load_t2_data(t1_dataloader.dataset,t1_predict,10,threshold,max_distance)
     with torch.no_grad():
         for i,batch in enumerate(tqdm(t2_dataloader,desc="t2 predict")):
             #txt_ids,attention_mask,token_type_ids,context_mask,tags = batch['txt_ids'],batch['attention_mask'],batch['token_type_ids'],batch['context_mask'],batch['tags']
@@ -93,7 +180,11 @@ def test_evaluation(model,t1_dataloader):
     #第一阶段的评估，即评估我们的ner的结果
     p1,r1,f1 = eval_t(t1_predict,t1_gold,t1_ids,query_offset1,window_offset_base,False)
     #第二阶段的评估，即评估我们的ner+re的综合结果
-    p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,True)
+    if max_distance>0:
+        #t2_ids, t2_predict = t2_filter(t2_ids,t2_predict,max_distance)
+        p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,max_distance)
+    else:
+        p2,r2,f2 = eval_t(t2_predict,t2_gold,t2_ids,query_offset2,window_offset_base,True)
     return (p1,r1,f1),(p2,r2,f2)
 
 #todo: 这里为了实现的简便，我们对overlap只考虑union，后续可以考虑求交集
@@ -121,6 +212,28 @@ def eval_t(predict,gold,ids,query_offset,window_offset_base,turn2=False):
             else:
                 new = (passage_id,(head_entity,relation_type,(end_entity_type,start1,end1)))
             predict1.append(new)
+    return get_score(set(gold),set(predict1))
+
+def eval_t2(predict,gold,ids,query_offset,window_offset_base,max_distance=45):
+    """
+    这里考虑根据关系的最大距离进行过滤结果
+    Args:
+        predict: [(s1,e1),(s2,e2),(s3,e3),...]
+        gold: (passage_id,(entity_type,start_idx,end_idx,entity_str)) or (passage_id,(head_entity,relation_type,end_entity))
+        ids: (passage_id,window_id,head_entity,relation_type,end_entity_type)，其中head_entity中的实体索引是passage而非context中的
+        query_offset: [CLS]+title+[SEP]+query+[SEP]对应的offset
+        window_offset_base: window_size-overlap的值
+    """
+    predict1 = []
+    for i,(_id,pre) in enumerate(zip(ids,predict)):
+        passage_id, window_id, head_entity, relation_type, end_entity_type = _id
+        window_offset = window_offset_base*window_id
+        head_start = head_entity[1]
+        for start,end in pre:
+            start1,end1 = start-query_offset[i]+window_offset,end-query_offset[i]+window_offset
+            if abs(start1-head_start)<=max_distance:
+                new = (passage_id,(head_entity,relation_type,(end_entity_type,start1,end1)))
+                predict1.append(new)
     return get_score(set(gold),set(predict1))
 
 

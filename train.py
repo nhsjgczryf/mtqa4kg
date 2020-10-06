@@ -15,7 +15,7 @@ from torch.nn.utils import clip_grad_norm_
 from model import MyModel
 from evaluation import dev_evaluation,test_evaluation
 
-from dataloader import load_data,load_t1_data
+from dataloader import load_data,load_t1_data,reload_data
 
 def set_seed(seed):
     random.seed(seed)
@@ -30,15 +30,15 @@ def args_parser():
     parser.add_argument("--train_batch",type=int,default=10)
     parser.add_argument("--dev_path",help="json数据的路径，或者dataloader的路径",default="./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/dev.json")
     parser.add_argument("--dev_batch",type=int,default=10)
-    parser.add_argument("--test_path",default="./data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_30/test.json")
+    parser.add_argument("--test_path",default="./data/cleaned_data/ACE2005/test.json")
     parser.add_argument("--test_batch",type=int,default=10)
     parser.add_argument("--turn2_down_sample_ratio",default=0.5,type=float,help="取值为0-1，代表每篇文章的")
     parser.add_argument("--dynamic_sample",action="store_true",help="是否每个epoch重新采样")
     #这个参数和我们数据处理的窗口大小有关系，数据预处理的时候窗口大小设置合理，是不需要过多考虑max_len这个参数的
-    parser.add_argument("--max_len",default=300,type=int,help="BERT模型允许输入的最大长度，这个值应该小于512")
+    parser.add_argument("--max_len",default=400,type=int,help="BERT模型允许输入的最大长度，这个值应该小于512")
     #window_size和overlap这两个参数在数据预处理阶段也有，但这里是预测时候的取值，因为预测的时候也可以尝试不同的windowsize和overlap
-    parser.add_argument("--window_size",type=int,default=300)
-    parser.add_argument("--overlap",type=int,default=45)
+    parser.add_argument("--window_size",type=int,default=300)#预处理默认为300
+    parser.add_argument("--overlap",type=int,default=45)#预处理默认为15
     parser.add_argument("--pretrained_model_path",default=r'bert-base-uncased')
     parser.add_argument("--max_epochs",default=5,type=int)
     parser.add_argument("--warmup_ratio",type=float,default=0.1)
@@ -46,11 +46,14 @@ def args_parser():
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="，这是第一轮问答的权重，用于调节两个任务的权重",default=0.25)
-    parser.add_argument("--threshold",type=int,default=5,help="一个可能存在的关系在训练集出现的最小次数")
+    #threshold和max_distence和上面的window_size和overlap类似
+    parser.add_argument("--threshold",type=int,default=4,help="一个可能存在的关系在训练集出现的最小次数")
+    parser.add_argument("--max_distance",type=int,default=45,help="一个关系的两个实体的start索引之间间隔的最多的wordpiece token的数量")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
     parser.add_argument("--max_grad_norm",type=float,default=0.5)
     parser.add_argument("--seed",type=int,default=0)
     parser.add_argument("--amp",action="store_true",help="是否开启混合精度")
+    parser.add_argument("--loss_type",type=str,choices=['ce','dl'],default='ce')
     parser.add_argument("--not_save",action="store_true",help="是否保存模型")
     parser.add_argument("--reload",action="store_true",help="是否重新构造缓存的数据")
     parser.add_argument("--eval",action="store_true",help="是否在验证集上评估模型(目前统一当作NER任务评估)")
@@ -167,7 +170,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             model.train()
         if args.test_eval and args.local_rank in [-1,0]:
             test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
-            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader)
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
             model.train()
@@ -200,33 +203,33 @@ if __name__=="__main__":
     if args.local_rank!=-1:
         torch.distributed.init_process_group(backend='nccl')
     if args.train_path.endswith(".json"):
-        p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
+        p = '{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],os.path.split(args.pretrained_model_path)[-1])
         p1 = os.path.join(os.path.split(args.train_path)[0],p)
         if not os.path.exists(p1) or args.reload:
             #debug的时候，关闭shuffle，训练的时候记得开启
             train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
                                          args.local_rank != -1, shuffle=True,down_sample_ratio=args.turn2_down_sample_ratio,threshold=args.threshold)
             pickle.dump(train_dataloader,open(p1,'wb'))
+            print("training data saved at ",p1)
         else:
+            print("reload training data from ",p1)
             train_dataloader = pickle.load(open(p1, 'rb'))
-            train_dataloader.dataset.down_sample_ratio = args.turn2_down_sample_ratio
-            train_dataloader.dataset.threshold = args.threshold
-            if isinstance(train_dataloader.sampler, torch.utils.data.DistributedSampler):
-                train_dataloader.sampler.rank = args.local_rank
-            train_dataloader.dataset.init_data()
+            train_dataloader = reload_data(train_dataloader,args.train_batch,args.max_len,args.turn2_down_sample_ratio,args.threshold,args.local_rank,True)
+            pickle.dump(train_dataloader,open(p1,'wb'))
     if args.eval:
         #这里的验证集，为了节约评估时间，我们是当作ner的任务来评估的，和test上的评估是存在一定的失真的，为了保证对所有的关系可能都进行评估，down sample ratio要取得很低
         if args.dev_path.endswith('.json'):
-            p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
+            p = '{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1) or args.reload:
                 dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,0.000001,threshold=args.threshold)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
+                print("evaluation data saved at ",p1)
             else:
+                print("reload evaluation data from ",p1)
                 dev_dataloader = pickle.load(open(p1, "rb"))
-                dev_dataloader.dataset.threshold = args.threshold
-                dev_dataloader.dataset.init_data()
-
+                dev_dataloader = reload_data(dev_dataloader,args.dev_batch,args.max_len,1e-10,args.threshold,-1,False)
+                pickle.dump(dev_dataloader,open(p1,'wb'))
     else:
         dev_dataloader = None
     train(args,train_dataloader,dev_dataloader)
