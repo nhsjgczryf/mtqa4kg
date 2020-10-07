@@ -15,8 +15,8 @@ class MyModel(nn.Module):
             self.loss_func = nn.CrossEntropyLoss()
         else:
             #其实从统一为NER的角度来看，我们可以用一个函数
-            self.loss_func1 = DynamicLoss(5,reduction='norm',beta=0.1)
-            self.loss_func2 = DynamicLoss(5,reduction='norm',beta=0.1)
+            self.loss_func1 = DynamicLoss(5,reduction='mean',beta=0.1)
+            self.loss_func2 = DynamicLoss(5,reduction='mean',beta=0.1)
         self.theta = config.theta
 
     def forward(self,input,attention_mask,token_type_ids,context_mask=None,turn_mask=None,target_tags=None):

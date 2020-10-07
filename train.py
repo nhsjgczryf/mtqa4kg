@@ -13,7 +13,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from model import MyModel
-from evaluation import dev_evaluation,test_evaluation
+from evaluation import dev_evaluation,test_evaluation,full_dev_evaluation
 
 from dataloader import load_data,load_t1_data,reload_data
 
@@ -107,9 +107,9 @@ def train(args,train_dataloader,dev_dataloader=None):
             train_dataloader.sampler.set_epoch(epoch)
         #debug的时候最好不要使用下面两行代码，因为这样可能导致需要较多的epoch才能收敛，每个epoch采样不同负样本的有效性也有待证明(fixme: 单GPU下面的代码也要执行)
         #暂时不对dev进行采样，然后呢，下面的init_data如果效率较低可能会部分重写MyDataset
-        if args.dynamic_sample and  1>args.turn2_down_sample_ratio>0:
+        if args.dynamic_sample and  1>=args.turn2_down_sample_ratio>0:
             train_dataloader.dataset.set_epoch(epoch)
-            train_dataloader.dataset.init_data()
+            train_dataloader.dataset.t2_down_sample()
         tqdm_train_dataloader = tqdm(train_dataloader,desc="epoch:%d"%epoch,ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
@@ -162,7 +162,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             torch.save(checkpoint,save_path)
             print("model saved at:",save_path)
         if args.eval and args.local_rank in [-1,0]:
-            p,r,f = dev_evaluation(model,dev_dataloader)
+            p,r,f = full_dev_evaluation(model,dev_dataloader)
             print("precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p, r, f))
             if args.tensorboard:
                 writer.add_scalars("score", {"precision": p, "recall": r, 'f1': f}, epoch)
@@ -170,7 +170,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             model.train()
         if args.test_eval and args.local_rank in [-1,0]:
             test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
-            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance)
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance,False,True)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
             model.train()
@@ -181,11 +181,10 @@ def train(args,train_dataloader,dev_dataloader=None):
 
 if __name__=="__main__":
     args = args_parser()
-    args.debug=False
     if args.debug:
-        args.train_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.dev_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        args.test_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
+        args.train_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_train.json'
+        args.dev_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_train.json'
+        args.test_path = '/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_test.json'
         #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
         #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
@@ -193,9 +192,11 @@ if __name__=="__main__":
         args.test_eval=True
         args.reload=True
         args.not_save=True
-        args.threshold = 5
-        args.turn2_down_sample_ratio=0.5 #之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
-        args.dynamic_sample = True
+        args.threshold = 4
+        args.max_distance=-1
+        args.warmup_ratio=-1
+        args.turn2_down_sample_ratio=-1 #之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
+        args.dynamic_sample = False
         args.max_epochs=2000
     set_seed(args.seed)
     print(args)
@@ -222,7 +223,7 @@ if __name__=="__main__":
             p = '{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],os.path.split(args.pretrained_model_path)[-1])
             p1 = os.path.join(os.path.split(args.dev_path)[0], p)
             if not os.path.exists(p1) or args.reload:
-                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,0.000001,threshold=args.threshold)
+                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,-1,threshold=args.threshold)
                 pickle.dump(dev_dataloader,open(p1,'wb'))
                 print("evaluation data saved at ",p1)
             else:

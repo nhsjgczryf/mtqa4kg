@@ -1,5 +1,6 @@
 from tqdm import tqdm
 import torch
+import numpy as np
 from torch.nn.utils.rnn import pad_sequence
 from torch.utils.data import DataLoader, DistributedSampler
 from transformers import BertTokenizer
@@ -60,14 +61,16 @@ def collate_fn1(batch):
     return nbatch
 
 
-def get_inputs(context,q,tokenizer,title="",max_len=512,ans=[]):
+
+def get_inputs(context,q,tokenizer,title="",max_len=200,ans=[],head_entity=None):
     """
+    这个函数和上面的get_input的区别在于，我们会对relation的head entity左右添加两个符号用于标识head entity的位置
     Args:
         context: 已经被tokenize后的上下文
         q:  没有被tokenize的问题
         title(可选参数): 没有被tokeizer的title
         max_len: 允许的最大的长度
-        ans: 答案列表
+        ans: 答案（实体）列表
     Returns:
         txt_ids: [CLS]question[SEP]context[SEP]编码后的句子
         tags1: 对应的标注序列
@@ -76,10 +79,7 @@ def get_inputs(context,q,tokenizer,title="",max_len=512,ans=[]):
     query = tokenizer.tokenize(q)
     tags = [tag_idxs['O']]*len(context)
     for i,an in enumerate(ans):
-        if len(an)==4:
-            start,end,ent_str = an[1:]
-        elif len(an)==3:
-            start,end,ent_str = an[-1][1:]
+        start,end,ent_str = an[1:]
         end = end-1#这里我们变成右侧闭区间
         if start!=end:
             tags[start]=tag_idxs['B']
@@ -88,10 +88,15 @@ def get_inputs(context,q,tokenizer,title="",max_len=512,ans=[]):
                 tags[i]=tag_idxs['M']
         else:
             tags[start]=tag_idxs['S']
-    txt_len = len(query)+len(query)+len(context)+4 if title else len(query)+len(context)+3
+    if head_entity:
+        h_start,h_end = head_entity[1],head_entity[2]
+        context = context[:h_start]+['[unused0]']+context[h_start:h_end]+["[unused1]"]+context[h_end:]
+        assert len(context)==len(tags)+2
+        tags = tags[:h_start]+[tag_idxs['O']]+tags[h_start:h_end]+[tag_idxs['O']]+tags[h_end:]
+    txt_len = len(query)+len(title)+len(context)+4 if title else len(query)+len(context)+3
     if txt_len > max_len:
-        context = context[:max_len - len(query) - 3]
-        tags = tags[:max_len - len(query) - 3]
+        context = context[:max_len - len(query) - 3] if not title else context[:max_len-len(query)-len(title)-4]
+        tags = tags[:max_len - len(query) - 3] if not title else context[:max_len-len(query)-len(title)-4]
     if title:
         txt = ['[CLS]'] + query+['[SEP]'] +title+ ['[SEP]'] + context + ['[SEP]']
     else:
@@ -108,9 +113,7 @@ def get_inputs(context,q,tokenizer,title="",max_len=512,ans=[]):
         token_type_ids = [0]*(len(query)+len(title)+3)+[1]*(len(context) + 1)
     return txt_ids, tags1, context_mask, token_type_ids
 
-
 def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
-    import numpy as np
     np.random.seed(epoch)
     relas = {}
     for q,ans in t2.items():
@@ -149,12 +152,12 @@ def t2_down_sample_prob(t2,down_sample_ratio,epoch,threshold):
     possitive_t2.update(negative_t2)
     return possitive_t2
 
+
 def query2relation(question,question_templates):
     '''
     把问题还原为三元组<entity_type,relation_type,entity_type>这个东西
     这个函数的具体实现和我们的模板的规则有关
     '''
-    import re
     turn2_questions = question_templates['qa_turn2']
     turn2_questions = {v:k for k,v in turn2_questions.items()}
     for k,v in turn2_questions.items():
@@ -168,11 +171,16 @@ class MyDataset:
     并且每个epoch尽量使用不同的随机数种子重新采样
     """
 
-    def __init__(self, path, tokenizer, max_len=512,down_sample_ratio=0.5,epoch=0,threshold=5):
+    def __init__(self, path, tokenizer, max_len=512,down_sample_ratio=0.5,threshold=5):
+        """
+        Args:
+            down_sample_ratio: 第二轮问答里面，正样本占所有样本的比例
+            epoch: 用于实现不同epoch采样得到不同的样本的功能
+        """
         with open(path, encoding='utf-8') as f:
             data = json.load(f)
         self.data =data
-        self.epoch=epoch
+        self.epoch=0
         self.tokenizer = tokenizer
         self.max_len = max_len
         self.down_sample_ratio = down_sample_ratio
@@ -181,7 +189,8 @@ class MyDataset:
 
     #下面这个函数最好是每个一个epoch就调用一次，这样可以使我们的采用更有多样性
     def init_data(self):
-        self.all_qas = []
+        self.all_t1 = []
+        self.all_t2 = []
         #print(len(self.data))
         for d in tqdm(self.data, desc="dataset"):
             context = d['context']
@@ -189,31 +198,51 @@ class MyDataset:
             qa_pairs = d['qa_pairs']
             t1 = qa_pairs[0]
             t2 = qa_pairs[1]
-            #t2 = t2_down_sample(t2,self.down_sample_ratio,self.epoch)#debug的时候我们不要采样
-            t2 = t2_down_sample_prob(t2,self.down_sample_ratio,self.epoch,self.threshold)
-            qas = []
             t1_qas = []
             t2_qas = []
-            dict1 = {}  # key:i,value:t1[i][ans],value是一个实体的列表
-            dict2 = {}  # key:t2[i][ans][0],value:i,
             for i, (q, ans) in enumerate(t1.items()):  # 这里的ans是某种类型的实体的列表
                 txt_ids, tags, context_mask, token_type_ids = get_inputs(context, q, self.tokenizer, title, self.max_len, ans)
                 t1_qas.append(
                     {"txt_ids": txt_ids, "tags": tags, "context_mask": context_mask, "token_type_ids": token_type_ids,'turn_mask':0})
-                dict1[i] = ans
-            for i, (q, ans) in enumerate(t2.items()):
-                txt_ids, tags, context_mask, token_type_ids = get_inputs(context, q, self.tokenizer, title, self.max_len, ans)
-                t2_qas.append(
-                    {"txt_ids": txt_ids, "tags": tags, "context_mask": context_mask, "token_type_ids": token_type_ids, 'turn_mask':1})
-                for an in ans:
-                    # 问题由(head_entity_type,relation_type,end_entity_type)确定，但是这里head/end_entity都没具体确定，所以存在多个答案
-                    dict2[tuple(an[1])] = dict2.get(tuple(an[1]), []) + [i]  # 一个头实体可能有对多个关系的提问
-            for qa in t1_qas+t2_qas:
-                qas.append(qa)
-            self.all_qas.extend(qas)
+            for t in t2:
+                head_entity = t['head_entity']
+                for q,ans in t['qas'].items():
+                    rel = query2relation(q,ace2005_question_templates)
+                    idx1,idx2 = rel[0],rel[1:]
+                    idx1,idx2 = ace2005_idx1[idx1],ace2005_idx2[idx2]
+                    if ace2005_dist[idx1][idx2]>=self.threshold:
+                        txt_ids, tags, context_mask, token_type_ids = get_inputs(context, q, self.tokenizer, title, self.max_len, ans,head_entity)
+                        t2_qas.append({"txt_ids": txt_ids, "tags": tags, "context_mask": context_mask, "token_type_ids": token_type_ids, 'turn_mask':1})
+            self.all_t1.extend(t1_qas)
+            self.all_t2.extend(t2_qas)
+        if 0<self.down_sample_ratio<=1:
+            self.t2_down_sample()
+        else:
+            self.all_qas = self.all_t1+self.all_t2
 
     def set_epoch(self,epoch):
         self.epoch = epoch
+
+    def t2_down_sample(self):
+        mark = [i['tags'][0]!=tag_idxs['S'] for i in self.all_t2]
+        mark = np.array(mark)
+        all_t2 = np.array(self.all_t2)
+        nt2_p = sum(mark==True)
+        nt2_n = sum(mark==False)
+        all_t2_p = all_t2[mark==True]
+        all_t2_n = all_t2[mark==False]
+        print("before sampling  t2 positive :",nt2_p,"t2 negative:",nt2_n)
+        if 1>=self.down_sample_ratio>0:
+            num =  (1-self.down_sample_ratio)*max(nt2_p,1)/(self.down_sample_ratio+1e-10)
+            num = int(round(num))
+            num = min(num,nt2_n)
+        else:
+            num = nt2_n
+        all_t2_n = np.random.choice(all_t2_n,num,replace=False)
+        print("after sampleing t2 positive :",len(all_t2_p),"t2 negative:",len(all_t2_n))
+        all_t2 = all_t2_p.tolist() + all_t2_n.tolist()
+        self.all_qas = self.all_t1+all_t2
+
 
     def __len__(self):
         # 返回有多少个完整的问答（可能是一轮，也可能是两轮）
@@ -276,6 +305,8 @@ class T1Dataset:
     def __getitem__(self, i):
         return self.t1_qas[i]
 
+
+
 class T2Dataset:
     def __init__(self, t1_dataset, t1_predict,threshold=5,max_distance=100):
         '''
@@ -302,6 +333,7 @@ class T2Dataset:
                 head, rel, end = ents[re[1]], re[0], ents[re[2]]
                 self.t2_gold.append((passage_id, (tuple(head[:-1]), rel, tuple(end[:-1]))))
         if max_distance>0:
+            #这种是类似pipeline的只考虑第一阶段提取出来的实体，我们可能会引入第一阶段的误差，但是呢，会降低负样本的数量
             #对所有的predict，添加对应的str信息
             t1_predict1 = []
             t1_ids1 = []
@@ -336,14 +368,17 @@ class T2Dataset:
                                     if ace2005_dist[idx1][idx2]>=threshold:
                                         head_entity = (_id1[-1],pre1[0],pre1[1],pre1[2])
                                         query = get_question(ace2005_question_templates,head_entity,rel_type,end_type)
-                                        txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len)
+                                        #qofs =  len(title)+len(tokenizer.tokenize(get_question(ace2005_question_templates,head_entity[0])))+3
+                                        wofs = window_id*window_offset_base
+                                        window_head_entity = (head_entity[0],head_entity[1]-wofs,head_entity[2]-wofs,head_entity[3])
+                                        txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len,[],window_head_entity)
                                         self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
                                                             "token_type_ids": token_type_ids})
                                         self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel_type, end_type))
                                         ofs = len(title) + len(tokenizer.tokenize(query)) + 3
                                         self.query_offset2.append(ofs)
         else:
-            #这个是最初的不考虑第一阶段中window预测得到的实体
+            #直接对第二阶段进行预测
             for i,(_id,pre) in enumerate(zip(tqdm(t1_ids,desc="t2 dataset"),t1_predict)):
                 passage_id, window_id, head_entity_type = _id
                 window_offset = window_offset_base*window_id
@@ -362,12 +397,98 @@ class T2Dataset:
                             idx1,idx2 = ace2005_idx1[head_entity[0]],ace2005_idx2[(rel,end_ent_type)]
                             if ace2005_dist[idx1][idx2]>=threshold:
                                 query = get_question(ace2005_question_templates,head_entity, rel, end_ent_type)
-                                txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len)
+                                window_head_entity = (head_entity[0],head_entity[1]-window_offset,head_entity[2]-window_offset,head_entity[3])
+                                txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len,[],window_head_entity)
                                 self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
                                                     "token_type_ids": token_type_ids})
                                 self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel, end_ent_type))
                                 ofs = len(title) + len(tokenizer.tokenize(query)) + 3
                                 self.query_offset2.append(ofs)
+
+    def __len__(self):
+        return len(self.t2_qas)
+
+    def __getitem__(self, i):
+        return self.t2_qas[i]
+
+
+class T2Dataset_gold:
+
+    def __init__(self, t1_dataset, t1_predict,threshold=5):
+        '''
+        Args:
+            t1_dataset: 第一轮问答用到的dataset，是上面的T1Dataset类的实例
+            t1_predict: 第一轮问答得到的答案，t1_predict[i]代表dataset1中的(p_idi,s_idi,q_idi)对应的样本的答案。(未修正，是window种的索引)
+        '''
+        tokenizer = t1_dataset.tokenizer
+        max_len = t1_dataset.max_len
+        #t1_ids = t1_dataset.t1_ids
+        passages = t1_dataset.passages
+        titles = t1_dataset.titles
+        passage_windows = t1_dataset.passage_windows
+        t1_querys = t1_dataset.t1_querys
+        window_size = t1_dataset.window_size
+        overlap = t1_dataset.overlap
+        self.t2_qas = []
+        self.t2_ids = []
+        self.t2_gold = []
+        self.query_offset2 = []
+        relations = t1_dataset.relations
+        entities = t1_dataset.entities
+        #query_offset1 = t1_dataset.query_offset1
+        window_offset_base = t1_dataset.window_offset_base
+        for passage_id, (ents, rels) in enumerate(zip(entities, relations)):
+            for re in rels:
+                head, rel, end = ents[re[1]], re[0], ents[re[2]]
+                self.t2_gold.append((passage_id, (tuple(head[:-1]), rel, tuple(end[:-1]))))
+        #这里我们根据T1 gold，重新构造t1_predict,t1_id1和query offseet1
+        t1_predict = []
+        t1_ids = []
+        query_offset1 = []
+        for p_id,passage in enumerate(passages):
+            ents,relas,tlt = entities[p_id],relations[p_id],titles[p_id]
+            blocks,regions=passage_blocks(passage, window_size, overlap)
+            for w_id, block in enumerate(blocks):
+                s,e = regions[w_id]
+                for ent in ents:
+                    if ent[1]>=s and ent[2]<=e:
+                        query = get_question(ace2005_question_templates,ent[0])
+                        query_and_tlt = ['[CLS]']+tokenizer.tokenize(query)+['[SEP]']+tlt+['[SEP]']
+                        ofs = len(query_and_tlt)
+                        assert ofs>=0
+                        nstart,nend=ent[1]+ofs-window_offset_base*w_id,ent[2]+ofs-window_offset_base*w_id#nstart和nend是在block里面的start和end，我们需要减去window offset
+                        assert ent[-1]==tokenizer.convert_tokens_to_string((query_and_tlt+block)[nstart:nend])
+                        #我们的t1——predict好像根据id进行了聚类，即我们预测的一个window一个类型的实体有好几个，这里我们用了一点trick，不用聚类
+                        t1_predict.append([(nstart,nend)])
+                        query_offset1.append(ofs)
+                        t1_ids.append((p_id,w_id,ent[0]))
+        assert len(t1_predict)==len(t1_ids) and len(t1_predict)==len(query_offset1)
+        for i,(_id,pre) in enumerate(zip(tqdm(t1_ids,desc="t2 dataset"),t1_predict)):
+            passage_id, window_id, head_entity_type = _id
+            window_offset = window_offset_base*window_id
+            context = passage_windows[passage_id][window_id]
+            title = titles[passage_id]
+            head_entities = []
+            assert len(pre)==1
+            for start,end in pre:
+                start1,end1 = start-query_offset1[i]+window_offset,end-query_offset1[i]+window_offset
+                ent_str = tokenizer.convert_tokens_to_string(passages[passage_id][start1:end1])
+                head_entity = (head_entity_type, start1, end1,ent_str)
+                head_entities.append(head_entity)
+            for head_entity in head_entities:
+                for rel in ace2005_relations:
+                    for end_ent_type in ace2005_entities:
+                        idx1,idx2 = ace2005_idx1[head_entity[0]],ace2005_idx2[(rel,end_ent_type)]
+                        if ace2005_dist[idx1][idx2]>=threshold:
+                            query = get_question(ace2005_question_templates,head_entity, rel, end_ent_type)
+                            window_head_entity = (head_entity[0],head_entity[1]-window_offset,head_entity[2]-window_offset,head_entity[3])
+                            txt_ids, _, context_mask, token_type_ids = get_inputs(context, query, tokenizer, title, max_len,[],window_head_entity)
+                            self.t2_qas.append({"txt_ids": txt_ids, "context_mask": context_mask,
+                                                "token_type_ids": token_type_ids})
+                            self.t2_ids.append((passage_id, window_id, head_entity[:-1], rel, end_ent_type))
+                            ofs = len(title) + len(tokenizer.tokenize(query)) + 3
+                            self.query_offset2.append(ofs)
+        #print("len query offset2",len(self.query_offset2))
 
     def __len__(self):
         return len(self.t2_qas)
@@ -390,12 +511,13 @@ def reload_data(old_dataloader,batch_size,max_len,down_sample_ratio,threshold,lo
     """这里我们根据原来保存的dataloader，重新导入"""
     dataset = old_dataloader.dataset
     old_max_len,old_down_sample_ratio,old_threshold = dataset.max_len, dataset.down_sample_ratio,dataset.threshold
-    print(( old_max_len,max_len , old_down_sample_ratio,down_sample_ratio , old_threshold,threshold))
-    if not( old_max_len==max_len and old_down_sample_ratio==down_sample_ratio and old_threshold==threshold):
+    if not( old_max_len==max_len and old_threshold==threshold):
         dataset.max_len =max_len
-        dataset.down_sample_ratio = down_sample_ratio
         dataset.threshold = threshold
         dataset.init_data()
+    elif old_down_sample_ratio!=down_sample_ratio:
+        dataset.down_sample_ratio = down_sample_ratio
+        dataset.t2_down_sample()
     sampler = DistributedSampler(dataset,rank=local_rank) if local_rank!=-1 else None
     dataloader = DataLoader(dataset,batch_size,sampler=sampler, shuffle=shuffle,collate_fn=collate_fn)
     return dataloader
@@ -408,8 +530,11 @@ def load_t1_data(test_path, pretrained_model_path, window_size, overlap, batch_s
     return dataloader
 
 
-def load_t2_data(t1_dataset, t1_predict, batch_size=10, threshold=5, max_distance=100):
-    t2_dataset = T2Dataset(t1_dataset, t1_predict, threshold, max_distance)
+def load_t2_data(t1_dataset, t1_predict, batch_size=10, threshold=5, max_distance=100,gold_t1=False):
+    if gold_t1:
+        t2_dataset = T2Dataset_gold(t1_dataset, t1_predict, threshold)
+    else:
+        t2_dataset = T2Dataset(t1_dataset, t1_predict, threshold, max_distance)
     dataloader = DataLoader(t2_dataset, batch_size, collate_fn=collate_fn1)
     return dataloader
 
