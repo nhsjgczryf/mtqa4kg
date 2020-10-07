@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 from transformers import BertModel
+from loss import DynamicLoss
 
 
 class MyModel(nn.Module):
@@ -10,7 +11,12 @@ class MyModel(nn.Module):
         self.bert = BertModel.from_pretrained(config.pretrained_model_path)
         self.tag_linear = nn.Linear(self.bert.config.hidden_size,5)
         self.dropout = nn.Dropout(config.dropout_prob)
-        self.loss_func = nn.CrossEntropyLoss()
+        if config.loss_type=='ce':
+            self.loss_func = nn.CrossEntropyLoss()
+        else:
+            #其实从统一为NER的角度来看，我们可以用一个函数
+            self.loss_func1 = DynamicLoss(5,reduction='norm',beta=0.1)
+            self.loss_func2 = DynamicLoss(5,reduction='norm',beta=0.1)
         self.theta = config.theta
 
     def forward(self,input,attention_mask,token_type_ids,context_mask=None,turn_mask=None,target_tags=None):
@@ -43,8 +49,12 @@ class MyModel(nn.Module):
             target_tags_t2 = target_tags_t2[context_mask_t2==1]#(N2)
             
             #batch里没有t1或t2时，不特殊处理的话t1或t2的loss会变为nan
-            loss_t1 = self.loss_func(tag_logits_t1,target_tags_t1) if len(target_tags_t1)!=0 else torch.tensor(0).type_as(input)
-            loss_t2 = self.loss_func(tag_logits_t2,target_tags_t2) if len(target_tags_t2)!=0 else torch.tensor(0).type_as(input)
+            if self.config.loss_type=='ce':
+                loss_t1 = self.loss_func(tag_logits_t1,target_tags_t1) if len(target_tags_t1)!=0 else torch.tensor(0).type_as(input)
+                loss_t2 = self.loss_func(tag_logits_t2,target_tags_t2) if len(target_tags_t2)!=0 else torch.tensor(0).type_as(input)
+            else:
+                loss_t1 = self.loss_func1(tag_logits_t1,target_tags_t1) if len(target_tags_t1)!=0 else torch.tensor(0).type_as(input)
+                loss_t2 = self.loss_func2(tag_logits_t2,target_tags_t2) if len(target_tags_t2)!=0 else torch.tensor(0).type_as(input)
             loss = self.theta*loss_t1+(1-self.theta)*loss_t2
             return loss,(loss_t1.item(),loss_t2.item())#后面一项主要用于训练的时候进行记录子任务的损失
         else:

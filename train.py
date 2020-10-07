@@ -13,7 +13,7 @@ import torch
 from torch.nn.utils import clip_grad_norm_
 
 from model import MyModel
-from evaluation import dev_evaluation,test_evaluation
+from evaluation import dev_evaluation,test_evaluation,full_dev_evaluation
 
 from dataloader import load_data,load_t1_data,reload_data
 
@@ -45,6 +45,7 @@ def args_parser():
     parser.add_argument("--dropout_prob",type=float,default=0.1)
     parser.add_argument("--weight_decay",type=float,default=0.01)
     parser.add_argument("--theta",type=float,help="调节两个任务的权重",default=0.5)
+    parser.add_argument("--loss_type",type=str,choices=['ce','dl'],default='ce')
     parser.add_argument("--threshold",type=int,default=5,help="一个可能存在的关系在训练集出现的最小次数")
     parser.add_argument("--max_distance",type=int,default=100,help="一个关系的两个实体的start索引之间间隔的最多的wordpiece token的数量")
     parser.add_argument("--local_rank",type=int,default=-1,help="用于DistributedDataParallel")
@@ -104,9 +105,9 @@ def train(args,train_dataloader,dev_dataloader=None):
             train_dataloader.sampler.set_epoch(epoch)
         #debug的时候最好不要使用下面两行代码，因为这样可能导致需要较多的epoch才能收敛，每个epoch采样不同负样本的有效性也有待证明(fixme: 单GPU下面的代码也要执行)
         #暂时不对dev进行采样，然后呢，下面的init_data如果效率较低可能会部分重写MyDataset
-        if args.dynamic_sample and  1>args.turn2_down_sample_ratio>0:
-            train_dataloader.dataset.set_epoch(epoch)
-            train_dataloader.dataset.init_data()
+	    if args.dynamic_sample and  1>=args.turn2_down_sample_ratio>0:	
+            train_dataloader.dataset.set_epoch(epoch)	
+            train_dataloader.dataset.t2_down_sample()
         tqdm_train_dataloader = tqdm(train_dataloader,desc="epoch:%d"%epoch,ncols=150)
         for i,batch in enumerate(tqdm_train_dataloader):
             torch.cuda.empty_cache()
@@ -159,7 +160,8 @@ def train(args,train_dataloader,dev_dataloader=None):
             torch.save(checkpoint,save_path)
             print("model saved at:",save_path)
         if args.eval and args.local_rank in [-1,0]:
-            p,r,f = dev_evaluation(model,dev_dataloader)
+            #p,r,f = dev_evaluation(model,dev_dataloader)
+            p,r,f = full_dev_evaluation(model,dev_dataloader)
             print("precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p, r, f))
             if args.tensorboard:
                 writer.add_scalars("score", {"precision": p, "recall": r, 'f1': f}, epoch)
@@ -167,7 +169,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             model.train()
         if args.test_eval and args.local_rank in [-1,0]:
             test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
-            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance)
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance,False,True)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
             model.train()
@@ -180,18 +182,20 @@ if __name__=="__main__":
     args = args_parser()
     args.debug=True
     if args.debug:
-        #args.train_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        #args.dev_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_train.json'
-        #args.test_path = './data/cleaned_data/ACE2005/bert_base_uncased/AFP_ENG_20030305_test.json'
-        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
-        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
-        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
+        args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_train.json'
+        args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_train.json'
+        args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_-1_onep/AFP_ENG_20030304_test.json'
+        #args.train_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        #args.dev_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_train.json'
+        #args.test_path = '/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/one_fake_test.json'
         args.eval=True
         args.test_eval=True
         args.reload=True
         args.not_save=True
-        args.threshold=0
-        args.turn2_down_sample_ratio=1/15#之前是0.1，按理来说1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
+        args.threshold=4
+        args.max_distance=-1
+        args.turn2_down_sample_ratio=0.01
+        #args.turn2_down_sample_ratio=1/15#之前是0.1，按理来说python1/42=0.2应该就是全集了，但是设置为0可以避免每个epoch重复采样
         args.dynamic_sample = False
         args.max_epochs=2000
     set_seed(args.seed)
@@ -200,27 +204,33 @@ if __name__=="__main__":
     if args.local_rank!=-1:
         torch.distributed.init_process_group(backend='nccl')
     if args.train_path.endswith(".json"):
-        p = '{}_{}_{}_{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],args.train_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1],args.local_rank!=-1)
-        p1 = os.path.join(os.path.split(args.train_path)[0],p)
-        if not os.path.exists(p1) or args.reload:
-            #debug的时候，关闭shuffle，训练的时候记得开启
-            train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,
-                                         args.local_rank != -1, shuffle=False,down_sample_ratio=args.turn2_down_sample_ratio,threshold=args.threshold)
-            pickle.dump(train_dataloader,open(p1,'wb'))
-        else:
-            train_dataloader = pickle.load(open(p1, 'rb'))
-            train_dataloader = reload_data(train_dataloader,args.train_batch,args.max_len,args.down_sample_ratio,args.threshold,args.local_rank,True)
-    if args.eval:
-        #这里的验证集，为了节约评估时间，我们是当作ner的任务来评估的，和test上的评估是存在一定的失真的，为了保证对所有的关系可能都进行评估，down sample ratio要取得很低
-        if args.dev_path.endswith('.json'):
-            p = '{}_{}_{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],args.dev_batch,args.max_len,os.path.split(args.pretrained_model_path)[-1])
-            p1 = os.path.join(os.path.split(args.dev_path)[0], p)
-            if not os.path.exists(p1) or args.reload:
-                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,0.000001,threshold=args.threshold)
-                pickle.dump(dev_dataloader,open(p1,'wb'))
-            else:
-                dev_dataloader = pickle.load(open(p1, "rb"))
-                dev_dataloader = reload_data(dev_dataloader,args.dev_batch,args.max_len,1e-10,args.threshold,-1,False)
-    else:
-        dev_dataloader = None
+        p = '{}_{}'.format(os.path.split(args.train_path)[-1].split('.')[0],os.path.split(args.pretrained_model_path)[-1])	
+        p1 = os.path.join(os.path.split(args.train_path)[0],p)	
+        if not os.path.exists(p1) or args.reload:	
+            #debug的时候，关闭shuffle，训练的时候记得开启	
+            train_dataloader = load_data(args.train_path, args.train_batch, args.max_len, args.pretrained_model_path,	
+                                         args.local_rank != -1, shuffle=True,down_sample_ratio=args.turn2_down_sample_ratio,threshold=args.threshold)	
+            pickle.dump(train_dataloader,open(p1,'wb'))	
+            print("training data saved at ",p1)	
+        else:	
+            print("reload training data from ",p1)	
+            train_dataloader = pickle.load(open(p1, 'rb'))	
+            train_dataloader = reload_data(train_dataloader,args.train_batch,args.max_len,args.turn2_down_sample_ratio,args.threshold,args.local_rank,True)	
+            pickle.dump(train_dataloader,open(p1,'wb'))	
+    if args.eval:	
+        #这里的验证集，为了节约评估时间，我们是当作ner的任务来评估的，和test上的评估是存在一定的失真的，为了保证对所有的关系可能都进行评估，down sample ratio要取得很低	
+        if args.dev_path.endswith('.json'):	
+            p = '{}_{}'.format(os.path.split(args.dev_path)[-1].split('.')[0],os.path.split(args.pretrained_model_path)[-1])	
+            p1 = os.path.join(os.path.split(args.dev_path)[0], p)	
+            if not os.path.exists(p1) or args.reload:	
+                dev_dataloader = load_data(args.dev_path,args.dev_batch,args.max_len,args.pretrained_model_path,False,False,-1,threshold=args.threshold)	
+                pickle.dump(dev_dataloader,open(p1,'wb'))	
+                print("evaluation data saved at ",p1)	
+            else:	
+                print("reload evaluation data from ",p1)	
+                dev_dataloader = pickle.load(open(p1, "rb"))	
+                dev_dataloader = reload_data(dev_dataloader,args.dev_batch,args.max_len,1e-10,args.threshold,-1,False)	
+                pickle.dump(dev_dataloader,open(p1,'wb'))	
+    else:	
+        dev_dataloader = None	
     train(args,train_dataloader,dev_dataloader)
