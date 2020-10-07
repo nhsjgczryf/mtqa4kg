@@ -1,0 +1,14 @@
+test_dataloader = load_t1_data(test_path,args.pretrained_model_path,300,45,32,args.max_len)
+(p1,r1,f1),(p2,r2,f2) = test_evaluation(mymodel,test_dataloader,5,-1,False)
+print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
+print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
+print('\n')
+============================================================================================
+
+t1_dataset: 100%|██████████| 80/80 [00:00<00:00, 114.29it/s]
+t1 predict: 100%|██████████| 38/38 [00:03<00:00, 11.26it/s]
+t2 dataset: 100%|██████████| 1190/1190 [01:16<00:00, 15.66it/s]
+t2 predict: 100%|██████████| 7652/7652 [04:05<00:00, 31.11it/s]len gold 5476 len predict 5497
+len gold 1151 len predict 1031
+Turn 1: precision:0.8934 recall:0.8968 f1:0.8951
+Turn 2: precision:0.6460 recall:0.5786 f1:0.6104
