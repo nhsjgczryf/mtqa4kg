@@ -182,29 +182,28 @@ def get_question(question_templates,head_entity,relation_type=None,end_entity_ty
     return question
 
 
-def block2qas(ber,dataset_tag,question_templates,title="",threshold=1,max_distance=50):
+def block2qas(ber,dataset_tag,title="",threshold=1):
     """
     Args:
         ber: (block,entities,relations)，一个block，以及对应的entities和relations
         dataset_tag: 数据集的类别
-        question_templates: 问题模板
         title: block所属的passage对应的title
-        max_distance: 构成关系的两个实体对应的最大的距离
         threshold: 允许的关系类型必须出现在训练集里面的最下次数
     """
     if dataset_tag.lower()=="ace2004":
         entities = ace2004_entities
         relations = ace2004_relations
-        #暂时还不支持ACE2004
-        #idx1s = ace2004_idx1
-        #idx2s = ace2004_idx2
-        #dist = ace2004_dist
+        idx1s = ace2004_idx1
+        idx2s = ace2004_idx2
+        dist = ace2004_dist
+        question_templates = ace2004_question_templates
     elif dataset_tag.lower()=='ace2005':
         entities = ace2005_entities 
         relations = ace2005_relations
         idx1s = ace2005_idx1
         idx2s = ace2005_idx2
         dist = ace2005_dist
+        question_templates = ace2005_question_templates
     else:
         raise Exception("不支持的数据集")
     block,ents,relas=ber
@@ -215,48 +214,22 @@ def block2qas(ber,dataset_tag,question_templates,title="",threshold=1,max_distan
     for en in ents:
         q = dict1[en[0]]
         qat1[q].append(en)
-    #构造第二轮问答,这里我们不从单独的实体出发构造问题，而是从一个window内距离小于等于max_distance的实体对是否构成关系来构造问题
-    if max_distance>0:
-        dict2 = {(rel[1],rel[0],rel[2][0]):[] for rel in relas}
-        #dict2的key就相当于问题，value就相当于答案，只不过其只包含有答案的部分
-        for rel in relas:
-            dict2[(rel[1],rel[0],rel[2][0])].append(rel[2])
-        qat2 = []
-        ents1 =  sorted(ents,key=lambda x: x[1])#根据实体的start index进行排序（我们根据start index来判断两个实体的距离） 
-        for i,ent1 in enumerate(ents1):
-            start = ent1[1]
-            qas = {}
-            for j,ent2 in enumerate(ents1[i+1:],i+1):
-                if ent2[1]>start+max_distance:
-                    break
-                else:
-                    head_type,end_type = ent1[0],ent2[0]
-                    for rel_type in relations:
-                        idx1,idx2 = idx1s[head_type],idx2s[(rel_type,end_type)]
-                        #判断该关系出现的频率是否大于等于阈值（即判断关系的合法性）
-                        if dist[idx1][idx2]>=threshold:
-                            #构造问题
-                            k = (ent1,rel_type,end_type)
-                            q = get_question(question_templates,ent1,rel_type,end_type)
-                            qas[q] =  dict2.get(k,[])
-            qat2.append({"head_entity":ent1,"qas":qas})
-    else:
-        #这里按照从单独的实体出发，考虑每个实体可能的关系和尾实体
-        dict2 = {(rel[1],rel[0],rel[2][0]):[] for rel in relas}
-        for rel in relas:
-            dict2[(rel[1],rel[0],rel[2][0])].append(rel[2])
-        qat2 = []
-        for ent in ents:
-            qas = {}
-            for rel_type in relations:
-                for ent_type in entities:
-                    # 这里我们考虑所有的关系可能
-                    k = (ent, rel_type, ent_type)
-                    idx1,idx2 = idx1s[ent[0]], idx2s[(rel_type,ent_type)]
-                    if dist[idx1][idx2]>=threshold:
-                        q = get_question(question_templates,ent, rel_type, ent_type)
-                        qas[q] = dict2.get(k,[])
-            qat2.append({'head_entity':ent,"qas":qas})
+    #这里按照从单独的实体出发，考虑每个实体可能的关系和尾实体
+    dict2 = {(rel[1],rel[0],rel[2][0]):[] for rel in relas}
+    for rel in relas:
+        dict2[(rel[1],rel[0],rel[2][0])].append(rel[2])
+    qat2 = []
+    for ent in ents:
+        qas = {}
+        for rel_type in relations:
+            for ent_type in entities:
+                # 这里我们考虑所有的关系可能
+                k = (ent, rel_type, ent_type)
+                idx1,idx2 = idx1s[ent[0]], idx2s[(rel_type,ent_type)]
+                if dist[idx1][idx2]>=threshold:
+                    q = get_question(question_templates,ent, rel_type, ent_type)
+                    qas[q] = dict2.get(k,[])
+        qat2.append({'head_entity':ent,"qas":qas})
     qas = [qat1,qat2]
     res["qa_pairs"]=qas
     return res
@@ -278,12 +251,11 @@ def char_to_wordpiece(passage,entities,tokenizer):
     return entities1
 
 
-def process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_tag,question_templates,threshold=1,max_distance=50):
+def process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_tag,threshold=1):
     """
     output_dir的名称最好包含tokenizer的信息，因为这里不同的tokenizer得到的数据是不一样的
     Args:
         threshold(int,>=0)： 选择训练集中出现次数大于等于threshold的实体关系组合
-        max_distance : 如果<=0，代表按照以实体为单位，进行预测，如果>0，代表        
     """
     ann_files = []
     txt_files = []
@@ -316,25 +288,15 @@ def process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_ta
         else:
             block_er = get_block_er(ntxt1,entities,relations,window_size,overlap,tokenizer)
             for ber in block_er:
-                data.append(block2qas(ber,dataset_tag,question_templates,title,threshold,max_distance))
+                data.append(block2qas(ber,dataset_tag,title,threshold))
     if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+        os.makedirs(output_dir)
     save_path = os.path.join(output_dir,os.path.split(data_dir)[-1]+".json")
     with open(save_path, 'w', encoding='utf-8') as f:
         json.dump(data, f)
 
-#下面的获取小样本的函数，可能没有和preprocess同步更新
-def get_mini_data(path,samples=100):
-    with open(path) as f:
-        data = json.load(f)
-    minidata = data[:samples]
-    d,f = os.path.split(path)
-    f = "{}_mini_{}".format(samples,f)
-    p = os.path.join(d,f)
-    with open(p,'w') as f:
-        json.dump(minidata,f)
 
-def get_one_passage_data(txt_path,ann_path,output_path,tokenizer,window_size,overlap,dataset_tag,question_templates,threshold,max_distance):
+def get_one_passage_data(txt_path,ann_path,output_path,tokenizer,window_size,overlap,dataset_tag,threshold):
     """给定一个txt和ann文件，我们输出对应的train,dev，test文件"""
     train_data = []
     test_data = []
@@ -355,48 +317,35 @@ def get_one_passage_data(txt_path,ann_path,output_path,tokenizer,window_size,ove
     test_data.append({"title":title,"passage":ntxt1,"entities":entities,"relations":relations})
     block_er = get_block_er(ntxt1,entities,relations,window_size,overlap,tokenizer)
     for ber in block_er:
-        train_data.append(block2qas(ber,dataset_tag,question_templates,title,threshold,max_distance))
+        train_data.append(block2qas(ber,dataset_tag,title,threshold))
     file_name =  os.path.split(txt_path)[-1].split('.')[0]
     if not os.path.exists(output_dir):
-        os.mkdir(output_dir)
+        os.makedirs(output_dir)
     json.dump(train_data,open(os.path.join(output_path,file_name+'_train.json'),'w'))
     json.dump(test_data,open(os.path.join(output_path,file_name+'_test.json'),'w'))
 
-def get_one_synthetic_data(tokenizer,output_dir,question_templates):
-    train_data = []
-    test_data = []
-    title = ["af","##p","_","eng","news","story"]
-    ntxt1 = tokenizer.tokenize("this is a fake story, so it is very short.")
-    ent1_str = tokenizer.convert_tokens_to_string(ntxt1[1:2])
-    ent2_str = tokenizer.convert_tokens_to_string(ntxt1[4:7])
-    entities = [[ "LOC",1, 2, ent1_str],["GPE",4,7,ent2_str]]
-    relations = [["PER-SOC", 0, 1 ]]
-    entities1 = [("LOC",1, 2, ent1_str),("GPE",4,7,ent2_str)]
-    relations1 = [("PER-SOC", entities1[0], entities1[1])]
-    test_data.append({"title":title,"passage":ntxt1,"entities":entities,"relations":relations})
-    train_data.append(block2qas([ntxt1,entities1,relations1],'ace2005',question_templates,title))
-    json.dump(train_data,open(os.path.join(output_dir,'one_fake_train.json'),'w'))
-    json.dump(test_data,open(os.path.join(output_dir,'one_fake_test.json'),'w'))
 
 if __name__=="__main__":
-    #data_dir = "./data/raw_data/ACE2005/test"
+    data_dir = "./data/raw_data/ACE2004/train0"
     #txt_path = '/home/wangnan/mtqa4kg/data/raw_data/ACE2005/test/AFP_ENG_20030304.0250.txt'
     #ann_path = '/home/wangnan/mtqa4kg/data/raw_data/ACE2005/test/AFP_ENG_20030304.0250.ann'
-    txt_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.txt'
-    ann_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.ann'
+    #txt_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.txt'
+    #ann_path = './data/raw_data/ACE2005/train/AFP_ENG_20030305.0918.ann'
     window_size = 300  #窗口尽量大，但是太大会导致对我们的后续的关系抽取任务不友好，即共指的问题会被放大
-    overlap = 0
-    is_test = True
-    threshold = 4 #4已经能够覆盖训练集出现过的80%多一点的关系了 
-    max_distance = -1 #44已经是训练集里的最大值
+    overlap = 15
+    is_test = False
+    dataset_tag = 'ace2004'
+    threshold = 3 #4已经能够覆盖训练集出现过的80%多一点的关系了 
     question_templates = ace2005_question_templates
     from transformers import BertTokenizer
     tokenizer = BertTokenizer.from_pretrained(pretrained_model_path)
+    output_dir = "./data/cleaned_data/ACE2004/{}_overlap_{}_window_{}_threshold_{}".format(os.path.split(pretrained_model_path)[-1],overlap,window_size,threshold)
+    process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,dataset_tag,threshold)
     #output_dir = "./data/cleaned_data/ACE2005/{}_overlap_{}_window_{}_threshold_{}_max_distance_{}".format(os.path.split(pretrained_model_path)[-1],overlap,window_size,threshold,max_distance)
     #process(data_dir, output_dir, tokenizer, is_test, window_size, overlap, 'ace2005',question_templates)
     #get_mini_data("./data/cleaned_data/ACE2005/bert_base_uncased/train.json",1)
     #get_one_passage_data(txt_path,ann_path,output_dir,tokenizer,150,50,'ace2005',question_templates)
     #get_one_synthetic_data(tokenizer,output_dir,question_templates)
-    output_dir = "./data/cleaned_data/ACE2005/{}_overlap_{}_window_{}_threshold_{}_max_distance_{}_onep".format(os.path.split(pretrained_model_path)[-1],overlap,window_size,threshold,max_distance)
+    #output_dir = "./data/cleaned_data/ACE2005/{}_overlap_{}_window_{}_threshold_{}_max_distance_{}_onep".format(os.path.split(pretrained_model_path)[-1],overlap,window_size,threshold,max_distance)
     #process(data_dir,output_dir,tokenizer,is_test,window_size,overlap,'ace2005',question_templates,threshold,max_distance)
-    get_one_passage_data(txt_path,ann_path,output_dir,tokenizer,window_size,overlap,'ace2005',question_templates,threshold,max_distance)
+    #get_one_passage_data(txt_path,ann_path,output_dir,tokenizer,window_size,overlap,'ace2005',threshold)

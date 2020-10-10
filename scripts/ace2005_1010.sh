@@ -1,0 +1,2 @@
+python train.py --train_path "/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/bert-base-uncased_overlap_15_window_300_threshold_4_max_distance_45/train.json" \
+ --train_batch 20 --amp  --test_eval --turn2_down_sample_ratio -1 --max_distance -1 --max_len 512 --max_epochs 10 --lr 2e-5 --threshold 5 --overlap 45

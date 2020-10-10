@@ -1,0 +1,37 @@
+import pickle
+import os
+import torch
+from evaluation import test_evaluation,dev_evaluation,full_dev_evaluation
+from model import MyModel
+from dataloader import load_t1_data,load_data
+pretiained_model_path="bert-base-uncased"
+test_path = "/content/drive/My Drive/mtqa4kg/data/cleaned_data/ACE2005/test.json"
+test_batch = 32
+model_dir = "./checkpoints/ACE2005/2020_10_09_01_52_44/"
+args = pickle.load(open(model_dir+'args',"rb"))
+file = 'checkpoint_8.cpt'
+overlap = 30
+mymodel = MyModel(args)
+torch.cuda.empty_cache()
+checkpoint = torch.load(model_dir+file,map_location=torch.device("cpu"))
+model_state_dict = checkpoint['model_state_dict']
+mymodel.load_state_dict(model_state_dict)
+device = torch.device("cuda") if  torch.cuda.is_available() else torch.device("cpu")
+mymodel = mymodel.to(device)
+test_dataloader = load_t1_data(test_path,args.pretrained_model_path,300,overlap,32,args.max_len)
+(p1,r1,f1),(p2,r2,f2) = test_evaluation(mymodel,test_dataloader,5,-1,False)
+print('param: ',file,overlap)
+print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
+print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
+print('\n')
+
+===================================================================================
+t1_dataset: 100%|██████████| 80/80 [00:00<00:00, 126.40it/s]
+t1 predict: 100%|██████████| 36/36 [00:03<00:00, 10.43it/s]
+t2 dataset: 100%|██████████| 1148/1148 [01:07<00:00, 16.90it/s]
+t2 predict: 100%|██████████| 7284/7284 [03:49<00:00, 31.68it/s]
+len gold 5476 len predict 5384
+len gold 1151 len predict 1053
+param:  checkpoint_8.cpt 30
+Turn 1: precision:0.8990 recall:0.8839 f1:0.8913
+Turn 2: precision:0.6581 recall:0.6021 f1:0.6289
