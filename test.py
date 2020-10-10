@@ -1,15 +1,10 @@
 import pickle
 import os
 import torch
-from evaluation import test_evaluation,dev_evaluation
+from evaluation import test_evaluation,dev_evaluation,full_dev_evaluation,
 from model import MyModel
 from dataloader import load_t1_data,load_data
 
-
-os.environ['CUDA_VISIBLE)DEVICES']='3'
-
-
-os.environ['CUDA_VISIBLE)DEVICES']='3'
 
 test_path = "/home/wangnan/mtqa4kg/data/cleaned_data/ACE2005/bert_base_uncased/test.json"
 test_batch=5

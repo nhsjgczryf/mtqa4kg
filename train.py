@@ -170,7 +170,7 @@ def train(args,train_dataloader,dev_dataloader=None):
             model.train()
         if args.test_eval and args.local_rank in [-1,0]:
             test_dataloader = load_t1_data(args.test_path,args.pretrained_model_path,args.window_size,args.overlap,args.test_batch,args.max_len) #test_dataloader是第一轮问答的dataloder
-            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance,False,True)
+            (p1,r1,f1),(p2,r2,f2) = test_evaluation(model,test_dataloader,args.threshold,args.max_distance,False)
             print("Turn 1: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p1,r1,f1))
             print("Turn 2: precision:{:.4f} recall:{:.4f} f1:{:.4f}".format(p2,r2,f2))
             model.train()
